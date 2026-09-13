@@ -163,10 +163,22 @@ agent 据此向用户解释。
 ## 调试页面
 
 `app/static/index.html`，布局参考 Open WebUI：左侧会话列表、助手消息带头像无气泡、
-用户消息右侧气泡、底部圆角输入框。功能上支持流式渲染、工具卡片折叠、人工确认卡片、
-会话切换与历史恢复、浅色/深色主题切换、以及一个核对协议用的原始事件抽屉。
+用户消息右侧气泡、底部圆角输入框。功能上支持流式渲染、markdown、工具卡片折叠、
+人工确认卡片、会话切换与历史恢复、浅色/深色主题切换、以及一个核对协议用的原始事件抽屉。
 
 主题令牌集中在 CSS 顶部的 `:root[data-theme=...]`，换皮只改那一层。
+
+> **浏览器端与桌面端是同一个文件**。`app/main.py` 把 `app/static` 挂在 `/ui`，
+> `app/desktop.py` 的窗口也加载同一个地址，改一处两边同时生效。
+
+**markdown 渲染**用 vendor 在 `app/static/vendor/marked.umd.js` 的 marked（MIT，v18），
+**不走 CDN**：桌面端要能离线跑，内网也可能访问不到 CDN。引入时用相对路径
+`./vendor/marked.umd.js`——静态目录挂在 `/ui` 下，写死绝对路径会 404。
+
+marked 只解析、不管安全，因此输出会再过一遍白名单清洗（`sanitizeHtml`）：
+不在白名单的标签脱壳成纯文本（`script`/`style`/`iframe` 因此失效），
+属性只留 `href`/`src`/`alt`/`title`/`class`，`javascript:` 之类的 URL 一律剥掉。
+模型输出可能被提示注入影响，直接 `innerHTML` 等于把 XSS 交给它。
 
 ## 桌面模式
 

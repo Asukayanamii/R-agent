@@ -29,6 +29,7 @@
     --danger-bg: #fef2f2;
     --danger-border: #fecaca;
     --ok: #15803d;
+    --link: #1d4ed8;
   }
   :root[data-theme="dark"] {
     --bg: #1a1a1a;
@@ -51,6 +52,7 @@
     --danger-bg: #2a1414;
     --danger-border: #52201f;
     --ok: #4ade80;
+    --link: #7aa2f7;
   }
 
   :root {
@@ -187,9 +189,44 @@
   .body { min-width: 0; flex: 1; }
   .turn.user .body { flex: 0 1 auto; max-width: 76%; }
 
+  /* ============ markdown 渲染结果 ============ */
   .md { word-break: break-word; }
+  .md > *:first-child { margin-top: 0; }
+  .md > *:last-child { margin-bottom: 0; }
   .md p { margin: 0 0 10px; }
   .md strong { font-weight: 600; }
+  .md em { font-style: italic; }
+  .md del { color: var(--text-faint); }
+
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+    margin: 18px 0 9px; font-weight: 600; line-height: 1.35;
+  }
+  .md h1 { font-size: 1.34em; }
+  .md h2 { font-size: 1.2em; }
+  .md h3 { font-size: 1.07em; }
+  .md h4, .md h5, .md h6 { font-size: 1em; color: var(--text-dim); }
+
+  .md ul, .md ol { margin: 0 0 10px; padding-left: 1.5em; }
+  .md li { margin: 3px 0; }
+  .md li > p { margin: 0; }
+  .md li > ul, .md li > ol { margin: 3px 0 0; }
+
+  .md blockquote {
+    margin: 10px 0; padding: 2px 0 2px 13px;
+    border-left: 3px solid var(--border);
+    color: var(--text-dim);
+  }
+  .md hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+  .md a {
+    color: var(--link);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1px;
+  }
+  .md a:hover { text-decoration-thickness: 2px; }
+  .md img { max-width: 100%; border-radius: 8px; }
+
   .md pre {
     background: var(--bg-code);
     border: 1px solid var(--border);
@@ -201,7 +238,7 @@
     font-size: 12.5px;
     line-height: 1.6;
   }
-  .md code.inline {
+  .md code {
     background: var(--bg-code);
     border: 1px solid var(--border);
     border-radius: 5px;
@@ -209,6 +246,18 @@
     font-family: var(--mono);
     font-size: 12.5px;
   }
+  .md pre code { background: none; border: none; padding: 0; font-size: inherit; }
+
+  .md table {
+    border-collapse: collapse;
+    margin: 10px 0;
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+    font-size: 13.5px;
+  }
+  .md th, .md td { border: 1px solid var(--border); padding: 6px 11px; text-align: left; }
+  .md th { background: var(--bg-code); font-weight: 600; }
 
   .user-bubble {
     background: var(--bubble);
@@ -453,6 +502,8 @@
   </div>
 </aside>
 
+<!-- 相对路径：静态目录挂在 /ui，写死绝对路径会在换挂载点时失效 -->
+<script src="./vendor/marked.umd.js"></script>
 <script>
 "use strict";
 
@@ -470,25 +521,85 @@ const handlers = {
 };
 
 /* ============================================================
-   极简 markdown：转义优先，代码块单独处理，不解析链接与 HTML
+   markdown 渲染
+
+   用 vendor 进来的 marked，不走 CDN——桌面端要能离线跑，
+   内网也可能访问不到 CDN。
+
+   marked 只管解析、不管安全，输出必须过一遍白名单清洗：模型输出可能
+   被提示注入影响，直接 innerHTML 等于把 XSS 交给它。
    ============================================================ */
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
 
-function renderMd(text) {
-  return String(text)
-    .split(/```/)
-    .map((part, i) => {
-      if (i % 2 === 1) {
-        const code = part.replace(/^[\w-]*\n/, "");
-        return `<pre><code>${escapeHtml(code)}</code></pre>`;
+const MD_TAGS = new Set([
+  "P", "BR", "STRONG", "EM", "DEL", "CODE", "PRE",
+  "H1", "H2", "H3", "H4", "H5", "H6",
+  "UL", "OL", "LI", "BLOCKQUOTE", "HR",
+  "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD",
+]);
+const MD_ATTRS = {
+  A: ["href", "title"],
+  IMG: ["src", "alt", "title"],
+  CODE: ["class"],
+  PRE: ["class"],
+};
+const MD_URL = /^(https?:|mailto:|#)/i;
+
+function sanitizeHtml(html) {
+  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
+  const root = doc.body.firstElementChild;
+
+  const walk = (node) => {
+    for (const child of Array.from(node.children)) {
+      walk(child);
+
+      if (!MD_TAGS.has(child.tagName)) {
+        // 脱壳保留文字：script / style 的内容会变成纯文本，不再可执行
+        child.replaceWith(...child.childNodes);
+        continue;
       }
-      return escapeHtml(part)
-        .replace(/`([^`\n]+)`/g, '<code class="inline">$1</code>')
-        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-        .replace(/\n/g, "<br>");
-    })
-    .join("");
+
+      const allowed = MD_ATTRS[child.tagName] || [];
+      for (const attr of Array.from(child.attributes)) {
+        if (!allowed.includes(attr.name.toLowerCase())) child.removeAttribute(attr.name);
+      }
+
+      if (child.tagName === "A") {
+        const href = child.getAttribute("href") || "";
+        if (!MD_URL.test(href)) child.removeAttribute("href");
+        else {
+          child.setAttribute("target", "_blank");
+          child.setAttribute("rel", "noopener noreferrer");
+        }
+      }
+      if (child.tagName === "IMG") {
+        const src = child.getAttribute("src") || "";
+        if (!/^https?:/i.test(src)) child.removeAttribute("src");
+      }
+    }
+  };
+
+  walk(root);
+  return root.innerHTML;
+}
+
+if (typeof marked !== "undefined") {
+  marked.setOptions({ gfm: true, breaks: true });
+}
+
+function renderMd(text) {
+  const raw = String(text);
+  if (typeof marked === "undefined") {
+    // vendor 资源没加载上时退化成纯文本，别让整块渲染塌掉
+    return escapeHtml(raw).replace(/\n/g, "<br>");
+  }
+  try {
+    return sanitizeHtml(marked.parse(raw));
+  } catch (err) {
+    console.warn("markdown 解析失败，退化为纯文本", err);
+    return escapeHtml(raw).replace(/\n/g, "<br>");
+  }
 }
 
 /* ============================================================
