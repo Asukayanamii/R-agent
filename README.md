@@ -111,6 +111,37 @@ agent 据此向用户解释。
 
 主题令牌集中在 CSS 顶部的 `:root[data-theme=...]`，换皮只改那一层。
 
+## 桌面模式
+
+把同一套前后端装进原生窗口，用于打包成桌面应用：
+
+```bash
+pip install -r requirements-desktop.txt
+```
+
+在项目根目录执行（两种写法等价）：
+
+```bash
+python run_desktop.py
+python -m app.desktop
+```
+
+**必须从项目根目录启动**，否则会报 `ModuleNotFoundError: No module named 'app'`。
+根目录的 `run_desktop.py` 就是为此存在的：直接运行脚本时 Python 只把**脚本所在目录**
+放进 `sys.path`，所以 `python app/desktop.py` 一定会失败。
+
+`app/desktop.py` 会在后台线程启动 uvicorn（**端口由系统分配**，不会和已在跑的 8000 冲突），
+用 `/chat/history` 探活——该请求会走到 runner，成功即代表 lifespan 里的 `init_runner`
+已完成——然后打开窗口。窗口关闭时后端一并退出。
+
+**关键约束**：`/chat/stream` 的流式渲染依赖 Chromium 的 `fetch` + `ReadableStream`。
+已验证 EdgeWebView2（Chromium 152）下逐帧到达；首个 `thread` 帧在 8ms 内到达、
+后续 token 在 LLM 首 token 产出后陆续到达，说明宿主没有缓冲响应。因此
+`app/desktop.py` 在 Windows 上**固定使用 `edgechromium` 后端**，不交给 pywebview
+自动挑选，避免落到非 Chromium 内核。
+
+打包成单个 exe 需要 PyInstaller，尚未配置。
+
 ## 命令行验证
 
 ```bash

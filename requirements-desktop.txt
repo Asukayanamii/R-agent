@@ -1,0 +1,5 @@
+# 桌面模式（python -m app.desktop）额外需要。
+# 不并入 requirements.txt：它会引入平台相关的 GUI 依赖
+# （Windows 上是 pythonnet/WebView2，Linux 上需要 GTK），
+# 装到无图形界面的服务器上会失败。
+pywebview==6.2.1
