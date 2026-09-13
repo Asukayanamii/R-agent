@@ -6,7 +6,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.container import get_service
-from app.event.events import HistoryMessage, ThreadData, ThreadEvent, ThreadSummary
+from app.event.events import (
+    HistoryMessage,
+    InterruptData,
+    ThreadData,
+    ThreadEvent,
+    ThreadSummary,
+)
 from app.event.stream import SSE_HEADERS, SSE_MEDIA_TYPE, sse_stream
 from app.result.result import Result
 
@@ -52,6 +58,10 @@ class ResumeRequest(BaseModel):
 class HistoryResponse(BaseModel):
     thread_id: str
     messages: list[HistoryMessage]
+    pending: list[InterruptData] = Field(
+        default_factory=list,
+        description="待确认项。前端据此在历史末尾补渲染确认卡片，否则卡住的会话进去无处可点",
+    )
 
 
 class ThreadListResponse(BaseModel):
@@ -106,8 +116,12 @@ async def chat_resume(payload: ResumeRequest) -> StreamingResponse:
 async def chat_history(
     thread_id: str = Query(..., description="会话 ID"),
 ) -> Result[HistoryResponse]:
-    messages = await get_service().history(thread_id)
-    return Result.success(data=HistoryResponse(thread_id=thread_id, messages=messages))
+    service = get_service()
+    messages = await service.history(thread_id)
+    pending = await service.pending_interrupts(thread_id)
+    return Result.success(
+        data=HistoryResponse(thread_id=thread_id, messages=messages, pending=pending)
+    )
 
 
 @router.get(

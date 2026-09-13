@@ -7,12 +7,22 @@
 
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from pydantic import BaseModel
 
 from app.agent.runner import AgentRunner
 from app.dao.thread_index_dao import ThreadIndexDao
-from app.event.events import HistoryMessage, ThreadSummary
+from app.event.events import (
+    ErrorData,
+    ErrorEvent,
+    HistoryMessage,
+    InterruptData,
+    InterruptEvent,
+    MessageEndData,
+    MessageEndEvent,
+    ThreadSummary,
+)
 from app.models.entities import ThreadRecord
 
 
@@ -21,7 +31,37 @@ class ChatService:
         self._runner = runner
         self._index = index
 
+    async def _stuck_reason(self, thread_id: str) -> str | None:
+        """会话是否卡着（用于索引里的 pending 标记）。"""
+        if await self._runner.is_interrupted(thread_id):
+            return "待确认"
+        if await self._runner.has_dangling_tool_calls(thread_id):
+            return "有悬空工具调用"
+        return None
+
     async def stream(self, thread_id: str, message: str) -> AsyncIterator[BaseModel]:
+        pending = await self._runner.pending_interrupts(thread_id)
+        if pending:
+            # 用户绕过了确认、直接又发了一条消息。这里不能只回一句"请先调用
+            # /chat/resume"——他面对的是界面，没法自己构造请求，只会卡住。
+            # 把待确认项重新推回去，前端会再渲染一张卡片，点一下即可。
+            for item in pending:
+                yield InterruptEvent(
+                    data=item.model_copy(
+                        update={"prompt": f"上一条消息未处理，请先确认：{item.prompt}"}
+                    )
+                )
+            yield MessageEndEvent(data=MessageEndData(message_id=uuid4().hex[:8]))
+            return
+
+        if await self._runner.has_dangling_tool_calls(thread_id):
+            yield ErrorEvent(
+                data=ErrorData(
+                    message="该会话有未完成的工具调用，无法继续，请点击「新对话」开始"
+                )
+            )
+            return
+
         async for event in self._runner.stream(thread_id=thread_id, message=message):
             yield event
         await self._record(thread_id, title=message)
@@ -35,20 +75,30 @@ class ChatService:
         """
         一轮对话结束后刷新索引。
 
-        pending 直接问 agent 要，而不是从事件流里推断是否出现过 interrupt——
-        后者在"会话已中断却发来新消息"这类路径上会得出错误结论。
+        pending 取"是否还卡着"：正常中断时它等同于 is_interrupted，但也能覆盖
+        "中断态被新消息破坏、留下悬空 tool_calls"的坏死会话——那种会话同样需要
+        用户注意，只是不能再 resume，只能新建。
         """
         await self._index.upsert(
             ThreadRecord(
                 thread_id=thread_id,
                 title=title,
                 updated_at=datetime.now(timezone.utc).isoformat(),
-                pending=await self._runner.is_interrupted(thread_id),
+                pending=await self._stuck_reason(thread_id) is not None,
             )
         )
 
     async def history(self, thread_id: str) -> list[HistoryMessage]:
         return await self._runner.history(thread_id)
+
+    async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
+        """
+        该会话挂着的待确认项。
+
+        前端打开历史会话时要拿到它才能渲染确认卡片——否则一个卡住的会话
+        虽然侧边栏有红点，用户进去却无处可点。
+        """
+        return await self._runner.pending_interrupts(thread_id)
 
     async def threads(self, limit: int = 50) -> list[ThreadSummary]:
         records = await self._index.list(limit)

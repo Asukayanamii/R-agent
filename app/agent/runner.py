@@ -55,7 +55,28 @@ class AgentRunner(Protocol):
         ...
 
     async def is_interrupted(self, thread_id: str) -> bool:
-        """该会话是否停在待人工确认处。业务层据此维护索引里的 pending 标记。"""
+        """该会话是否停在待人工确认处。"""
+        ...
+
+    async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
+        """
+        取出该会话当前挂着的待确认项。
+
+        用于在用户绕过确认、直接发新消息时把确认卡片重新推给前端——
+        用户面对的是界面，没法自己去调 /chat/resume。
+        """
+        ...
+
+    async def has_dangling_tool_calls(self, thread_id: str) -> bool:
+        """
+        该会话的历史里是否有"没人回应的 tool_calls"。
+
+        这是 provider 拒绝请求的直接原因：
+        "An assistant message with 'tool_calls' must be followed by tool messages
+        responding to each 'tool_call_id'."
+        会话停在 interrupt 上时就是这样；此时若发新消息，interrupt 会被丢弃，
+        这条悬空调用就永久留在历史里。
+        """
         ...
 
     async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
@@ -76,7 +97,7 @@ class StubRunner:
 
     def __init__(self, delay: float = 0.05) -> None:
         self.delay = delay
-        self._pending: dict[str, str] = {}
+        self._pending: dict[str, InterruptData] = {}
         self._history: dict[str, list[HistoryMessage]] = {}
 
     async def history(self, thread_id: str) -> list[HistoryMessage]:
@@ -84,6 +105,13 @@ class StubRunner:
 
     async def is_interrupted(self, thread_id: str) -> bool:
         return thread_id in self._pending
+
+    async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
+        pending = self._pending.get(thread_id)
+        return [pending] if pending is not None else []
+
+    async def has_dangling_tool_calls(self, thread_id: str) -> bool:
+        return False
 
     async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
         items = list(self._history.items())[-limit:]
@@ -109,13 +137,13 @@ class StubRunner:
             await asyncio.sleep(self.delay)
 
         if message.startswith("/hitl"):
-            prompt = f"确认要执行「{message}」吗？"
-            self._pending[thread_id] = prompt
-            yield InterruptEvent(
-                data=InterruptData(
-                    id=uuid4().hex[:8], prompt=prompt, options=["确认", "取消"]
-                )
+            data = InterruptData(
+                id=uuid4().hex[:8],
+                prompt=f"确认要执行「{message}」吗？",
+                options=["确认", "取消"],
             )
+            self._pending[thread_id] = data
+            yield InterruptEvent(data=data)
             yield MessageEndEvent(data=MessageEndData(message_id=uuid4().hex[:8]))
             return
 

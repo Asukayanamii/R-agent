@@ -201,9 +201,39 @@ class LangGraphRunner:
                 return _text_of(message)
         return ""
 
+    @staticmethod
+    def _to_interrupt_data(item: object) -> InterruptData:
+        payload = (
+            item.value
+            if isinstance(item.value, dict)
+            else {"prompt": str(item.value)}
+        )
+        return InterruptData(
+            id=item.id,
+            prompt=payload.get("prompt", ""),
+            options=list(payload.get("options") or []),
+        )
+
     async def is_interrupted(self, thread_id: str) -> bool:
         snapshot = await self.graph.aget_state(self._config(thread_id))
         return bool(snapshot.interrupts)
+
+    async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
+        snapshot = await self.graph.aget_state(self._config(thread_id))
+        return [self._to_interrupt_data(item) for item in snapshot.interrupts]
+
+    async def has_dangling_tool_calls(self, thread_id: str) -> bool:
+        snapshot = await self.graph.aget_state(self._config(thread_id))
+        messages = snapshot.values.get("messages", [])
+        answered = {
+            m.tool_call_id for m in messages if isinstance(m, ToolMessage)
+        }
+        return any(
+            call["id"] not in answered
+            for message in messages
+            if isinstance(message, AIMessage)
+            for call in message.tool_calls
+        )
 
     async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
         """
@@ -283,14 +313,7 @@ class LangGraphRunner:
         # 中断不出现在 astream_events 里，只能跑完从状态快照读。
         snapshot = await self.graph.aget_state(config)
         for item in snapshot.interrupts:
-            payload = item.value if isinstance(item.value, dict) else {"prompt": str(item.value)}
-            yield InterruptEvent(
-                data=InterruptData(
-                    id=item.id,
-                    prompt=payload.get("prompt", ""),
-                    options=list(payload.get("options") or []),
-                )
-            )
+            yield InterruptEvent(data=self._to_interrupt_data(item))
 
         yield MessageEndEvent(
             data=MessageEndData(message_id=message_id or uuid4().hex[:8], usage=usage)

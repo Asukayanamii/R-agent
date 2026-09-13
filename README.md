@@ -59,7 +59,7 @@ cp .env.example .env
 | `LLM_API_KEY` | 无 | **未配置时自动降级为桩实现**，接口仍可调通 |
 | `LLM_BASE_URL` | `https://api.deepseek.com/v1` | 百炼填 `https://dashscope.aliyuncs.com/compatible-mode/v1`，Ollama 填 `http://localhost:11434/v1` |
 | `LLM_MODEL` | `deepseek-chat` | 百炼可用 `qwen-plus`，Ollama 可用 `qwen3:8b` |
-| `SQLITE_PATH` | `./data/checkpoints.db` | 会话状态落盘位置，留空则仅存于进程内存 |
+| `SQLITE_PATH` | `./data/checkpoints.db` | 会话状态落盘位置。**相对路径按项目根解析**，不受启动目录影响；留空则仅存于进程内存 |
 
 ## 启动
 
@@ -130,11 +130,31 @@ agent 决定调用工具后，`tools` 节点对每个需审批的调用 `interru
 事件，用户选择后调 `/chat/resume`。通过的调用执行，被拒的写入回绝的 ToolMessage，
 agent 据此向用户解释。
 
-两个要点：
+几个要点：
 
 - **多调用时中断逐个出现**。每次 `resume` 解决一个，响应里会带出下一个 `interrupt`，
   前端只需按同样方式再渲染一张确认卡片。
 - **同一节点的多个 interrupt 复用同一个 id**，前端不能用 id 去重。
+- **会话卡着时不允许直接发新消息**。两种情况会被 `ChatService` 挡下：停在 `interrupt` 上
+  （把待确认项重新推回前端），以及历史里有悬空的 `tool_calls`（返回 `error`，提示新建会话）。
+
+- **会话卡着时新消息会暂存，不会硬发，也不会丢**。前端一个 FIFO 就够，不需要消息队列——
+  真正的约束只有两条：同会话内有序、必须等 `interrupt` 全部消化完。那是状态机，不是投递问题。
+  暂存的消息在确认处理完（服务端 `pending` 转 false）后由前端自动补发。
+  服务端也做了兜底：绕过前端直接对卡住的会话发消息，会把待确认项重新推回去
+  （而不是回一句"请先调用 /chat/resume"——用户面对的是界面，没法自己构造请求）。
+- **打开卡住的会话会补渲染确认卡片**。`GET /chat/history` 的响应里带 `pending` 字段，
+  否则侧边栏虽有红点，用户进去只见历史、无处可点。
+
+  这条规则不能省。若在中断状态下硬发新消息，LangGraph 会**丢弃 interrupt** 并把新消息
+  追加进去，于是那条没有 `ToolMessage` 回应的 `tool_calls` 永久留在历史里，之后每次调用
+  模型都会被 provider 以 400 拒绝：
+
+  > An assistant message with 'tool_calls' must be followed by tool messages
+  > responding to each 'tool_call_id'.
+
+  `GET /chat/threads` 的 `pending` 标记用的正是这个判断（`is_interrupted` 或
+  `has_dangling_tool_calls`），所以被卡住的会话在侧边栏会带红点。
 
 工具执行**没有**使用 LangGraph 的 `ToolNode`：它会执行 `AIMessage` 里的全部调用
 （包括已被回绝的），并产生重复 `tool_call_id` 的 ToolMessage，审批拒绝会形同虚设。
