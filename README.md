@@ -22,6 +22,30 @@ conda activate my_agent
 pip install -r requirements.txt
 ```
 
+## 分层
+
+经典三层，依赖方向单向向下，每层只做自己的事：
+
+```
+app/api/          表现层      HTTP、请求/响应 DTO、SSE 外壳
+     ↓
+app/service/      业务层      编排 Agent 执行、维护会话索引
+     ↓
+app/dao/          数据访问层  只读写 thread_index 表，不含业务规则
+app/agent/        Agent 运行时 图定义、事件映射、checkpointer 访问
+     ↓
+app/models/       领域实体    ThreadRecord，供 dao 与 agent 共用
+```
+
+- **`app/container.py` 是组装根**：选哪个实现（有 key 走 LangGraph、无 key 降级桩）、
+  连接何时开关，都属于应用装配，不放进任何一层。
+- **`app/event/` 是协议模型**（wire format，含 `ThreadSummary` 等 DTO），
+  下层不 import 它；dao 只认 `app/models/entities.py` 里的领域实体。
+- **checkpointer 不单独抽 DAO**：那是 LangGraph 自己的存储，通过 LangGraph 的 API 访问，
+  不是我们写的 SQL。只为我们自己拥有的表写 DAO。
+- 改某层的实现不需要动其他层：换存储动 `container.py`，换业务规则动 `service/`，
+  换 SQL 动 `dao/`。
+
 ## 配置
 
 ```bash
@@ -53,6 +77,19 @@ python -m uvicorn app.main:app --reload --port 8000
 | POST | `/chat/stream` | 发起一轮对话，SSE 流 |
 | POST | `/chat/resume` | 带着用户选择，从 `interrupt` 处继续，SSE 流 |
 | GET | `/chat/history` | 读取既有会话消息，供前端恢复。走 `Result` 包装 |
+| GET | `/chat/threads` | 列出既有会话，按最近更新倒序。走 `Result` 包装 |
+
+> **会话列表为什么放在服务端**：`localStorage` 按 origin（含端口）隔离，而桌面端
+> 每次启动都随机挑端口，origin 随之改变，前端自持的会话清单重启后必然是空的——
+> 即便数据早已落库。因此列表以 `/chat/threads` 为唯一来源，前端只用 `localStorage`
+> 记住主题偏好。
+>
+> **为什么还要一张索引表**：checkpointer 只提供"列出检查点"（`alist(None)`），拿不到
+> 会话维度的清单——一个会话对应多条检查点。若每次列会话都枚举检查点再逐个查状态，
+> 是 N+1 次查询。因此 `app/agent/thread_index.py` 维护一张 `thread_index` 表
+> （thread_id / title / updated_at / pending），在写入侧随每轮对话 upsert，
+> 列表接口退化成一次普通查询。表与 checkpointer 共用同一个 sqlite 文件，
+> 换 Postgres 时一并迁走。索引为空而库里有会话时会自动回填一次。
 
 `/chat/stream` 请求体：
 

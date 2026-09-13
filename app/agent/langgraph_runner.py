@@ -36,6 +36,7 @@ from app.event.events import (
     ToolStartEvent,
     Usage,
 )
+from app.models.entities import ThreadRecord
 
 SYSTEM_PROMPT = "你是一个简洁、准确的中文助手。需要时调用工具，不要编造工具返回的结果。"
 
@@ -146,8 +147,11 @@ class LangGraphRunner:
     """把 LangGraph 事件流翻译成统一事件协议。"""
 
     def __init__(
-        self, checkpointer: BaseCheckpointSaver, model: BaseChatModel | None = None
+        self,
+        checkpointer: BaseCheckpointSaver,
+        model: BaseChatModel | None = None,
     ) -> None:
+        self.checkpointer = checkpointer
         self.graph = build_graph(checkpointer, model)
 
     @staticmethod
@@ -156,7 +160,7 @@ class LangGraphRunner:
 
     async def stream(self, thread_id: str, message: str) -> AsyncIterator[BaseModel]:
         inputs = {"messages": [HumanMessage(content=message)]}
-        async for event in self._run(inputs, self._config(thread_id)):
+        async for event in self._run(thread_id, inputs):
             yield event
 
     async def resume(self, thread_id: str, value: str) -> AsyncIterator[BaseModel]:
@@ -167,7 +171,7 @@ class LangGraphRunner:
                 data=ErrorData(message="该会话没有待确认的操作，无需 resume")
             )
             return
-        async for event in self._run(Command(resume=value), config):
+        async for event in self._run(thread_id, Command(resume=value)):
             yield event
 
     async def history(self, thread_id: str) -> list[HistoryMessage]:
@@ -190,7 +194,47 @@ class LangGraphRunner:
             )
         return result
 
-    async def _run(self, inputs: object, config: dict) -> AsyncIterator[BaseModel]:
+    @staticmethod
+    def _title_of(snapshot: object) -> str:
+        for message in getattr(snapshot, "values", {}).get("messages", []):
+            if isinstance(message, HumanMessage):
+                return _text_of(message)
+        return ""
+
+    async def is_interrupted(self, thread_id: str) -> bool:
+        snapshot = await self.graph.aget_state(self._config(thread_id))
+        return bool(snapshot.interrupts)
+
+    async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
+        """
+        从 checkpointer 枚举会话，成本是 N+1 次查询，只供索引重建使用。
+
+        checkpointer 没有"列出全部 thread_id"的正式接口，alist(None) 是可行入口；
+        其返回顺序即最近更新在前，因此同一 thread_id 首次出现时拿到的就是最新时间戳。
+        """
+        latest: dict[str, str] = {}
+        async for checkpoint in self.checkpointer.alist(None):
+            thread_id = checkpoint.config["configurable"]["thread_id"]
+            if thread_id not in latest:
+                latest[thread_id] = checkpoint.checkpoint.get("ts", "")
+                if len(latest) >= limit:
+                    break
+
+        result = []
+        for thread_id, timestamp in latest.items():
+            snapshot = await self.graph.aget_state(self._config(thread_id))
+            result.append(
+                ThreadRecord(
+                    thread_id=thread_id,
+                    title=self._title_of(snapshot),
+                    updated_at=timestamp,
+                    pending=bool(snapshot.interrupts),
+                )
+            )
+        return result
+
+    async def _run(self, thread_id: str, inputs: object) -> AsyncIterator[BaseModel]:
+        config = self._config(thread_id)
         usage = Usage()
         message_id = ""
 

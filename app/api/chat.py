@@ -5,8 +5,8 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.agent import get_runner
-from app.event.events import HistoryMessage, ThreadData, ThreadEvent
+from app.container import get_service
+from app.event.events import HistoryMessage, ThreadData, ThreadEvent, ThreadSummary
 from app.event.stream import SSE_HEADERS, SSE_MEDIA_TYPE, sse_stream
 from app.result.result import Result
 
@@ -54,6 +54,10 @@ class HistoryResponse(BaseModel):
     messages: list[HistoryMessage]
 
 
+class ThreadListResponse(BaseModel):
+    threads: list[ThreadSummary]
+
+
 def _sse(thread_id: str, events: AsyncIterator[BaseModel]) -> StreamingResponse:
     """两种入口共用同一套流外壳：先发 thread 握手，再透传数据面事件。"""
 
@@ -75,8 +79,10 @@ def _sse(thread_id: str, events: AsyncIterator[BaseModel]) -> StreamingResponse:
 )
 async def chat_stream(payload: ChatRequest) -> StreamingResponse:
     thread_id = payload.thread_id or uuid4().hex
-    runner = get_runner()
-    return _sse(thread_id, runner.stream(thread_id=thread_id, message=payload.message))
+    return _sse(
+        thread_id,
+        get_service().stream(thread_id=thread_id, message=payload.message),
+    )
 
 
 @router.post(
@@ -86,10 +92,9 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
     responses={200: {"content": {SSE_MEDIA_TYPE: {}}, "description": "SSE 事件流"}},
 )
 async def chat_resume(payload: ResumeRequest) -> StreamingResponse:
-    runner = get_runner()
     return _sse(
         payload.thread_id,
-        runner.resume(thread_id=payload.thread_id, value=payload.value),
+        get_service().resume(thread_id=payload.thread_id, value=payload.value),
     )
 
 
@@ -101,5 +106,21 @@ async def chat_resume(payload: ResumeRequest) -> StreamingResponse:
 async def chat_history(
     thread_id: str = Query(..., description="会话 ID"),
 ) -> Result[HistoryResponse]:
-    messages = await get_runner().history(thread_id)
+    messages = await get_service().history(thread_id)
     return Result.success(data=HistoryResponse(thread_id=thread_id, messages=messages))
+
+
+@router.get(
+    "/threads",
+    summary="列出既有会话",
+    description=(
+        "从 checkpointer 推导会话列表，按最近更新倒序。"
+        "这是会话列表的唯一来源：localStorage 按 origin 隔离，"
+        "而桌面端每次启动端口不同，靠前端自持清单必然丢。"
+    ),
+)
+async def chat_threads(
+    limit: int = Query(50, ge=1, le=200, description="最多返回多少条"),
+) -> Result[ThreadListResponse]:
+    threads = await get_service().threads(limit)
+    return Result.success(data=ThreadListResponse(threads=threads))

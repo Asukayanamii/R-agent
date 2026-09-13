@@ -1,8 +1,8 @@
 """
 Agent 执行器接口。
 
-路由与事件协议都只依赖 AgentRunner 协议。具体用哪个实现由 app/agent/__init__.py
-的工厂决定，新增实现只需满足本协议并注册，api / event 两层无需改动。
+本层只负责"跑一次图、产出事件"，以及读取图自身的状态。
+会话索引、列表拼装等属于业务层与数据访问层，不在这里。
 """
 
 import asyncio
@@ -28,6 +28,7 @@ from app.event.events import (
     ToolStartEvent,
     Usage,
 )
+from app.models.entities import ThreadRecord
 
 
 class AgentRunner(Protocol):
@@ -53,6 +54,18 @@ class AgentRunner(Protocol):
         """读取既有会话的消息，供前端恢复。不存在的会话返回空列表。"""
         ...
 
+    async def is_interrupted(self, thread_id: str) -> bool:
+        """该会话是否停在待人工确认处。业务层据此维护索引里的 pending 标记。"""
+        ...
+
+    async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
+        """
+        从存储里枚举会话快照，供业务层回填索引。
+
+        这是慢路径（每个会话要单独查一次状态），只应在索引重建时调用。
+        """
+        ...
+
 
 class StubRunner:
     """
@@ -68,6 +81,20 @@ class StubRunner:
 
     async def history(self, thread_id: str) -> list[HistoryMessage]:
         return list(self._history.get(thread_id, []))
+
+    async def is_interrupted(self, thread_id: str) -> bool:
+        return thread_id in self._pending
+
+    async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
+        items = list(self._history.items())[-limit:]
+        return [
+            ThreadRecord(
+                thread_id=thread_id,
+                title=messages[0].content if messages else "",
+                pending=thread_id in self._pending,
+            )
+            for thread_id, messages in reversed(items)
+        ]
 
     def _record(self, thread_id: str, role: str, content: str) -> None:
         self._history.setdefault(thread_id, []).append(

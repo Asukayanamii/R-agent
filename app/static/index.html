@@ -533,16 +533,26 @@ const sendBtn = document.getElementById("send");
 
 let threadId = null;
 let busy = false;
-let threads = JSON.parse(localStorage.getItem("threads") || "[]");
+let threads = [];
 
 /* ============================================================
-   侧边栏
+   侧边栏：会话列表由服务端提供，前端不自行维护清单。
+   原因：localStorage 按 origin（含端口）隔离，桌面端每次启动端口不同，
+   靠前端自持清单重启后必然是空的——即便数据早已落库。
    ============================================================ */
-function saveThreads() {
-  localStorage.setItem("threads", JSON.stringify(threads.slice(0, 40)));
+async function loadThreads() {
+  try {
+    const res = await fetch("/chat/threads?limit=50");
+    if (!res.ok) return;
+    const body = await res.json();
+    threads = body.data?.threads || [];
+  } catch {
+    threads = [];
+  }
+  renderThreads();
 }
 
-function renderThreads(pendingId) {
+function renderThreads() {
   const box = document.getElementById("threads");
   box.innerHTML = "";
   if (!threads.length) {
@@ -550,43 +560,27 @@ function renderThreads(pendingId) {
     return;
   }
   for (const t of threads) {
-    const el = document.createElement("div");
-    el.className = "thread" + (t.id === threadId ? " active" : "");
+    const row = document.createElement("div");
+    row.className = "thread" + (t.thread_id === threadId ? " active" : "");
     const title = document.createElement("span");
     title.className = "title";
     title.textContent = t.title;
     title.title = t.title;
-    el.appendChild(title);
+    row.appendChild(title);
     if (t.pending) {
       const dot = document.createElement("span");
       dot.className = "dot";
       dot.title = "有待确认的操作";
-      el.appendChild(dot);
+      row.appendChild(dot);
     }
-    el.onclick = () => openThread(t.id);
-    box.appendChild(el);
+    row.onclick = () => openThread(t.thread_id);
+    box.appendChild(row);
   }
-}
-
-function upsertThread(id, title) {
-  const found = threads.find((t) => t.id === id);
-  if (found) {
-    if (title) found.title = title;
-  } else {
-    threads.unshift({ id, title: title || id.slice(0, 12) });
-  }
-  saveThreads();
-  renderThreads();
-}
-
-function markPending(id, pending) {
-  const t = threads.find((x) => x.id === id);
-  if (t) { t.pending = pending; saveThreads(); renderThreads(); }
 }
 
 function setThread(id) {
   threadId = id;
-  upsertThread(id);
+  renderThreads();
 }
 
 /* ============================================================
@@ -768,19 +762,16 @@ async function send() {
 
   if (!threadId) {
     threadId = crypto.randomUUID().replace(/-/g, "");
-    threads.unshift({ id: threadId, title: message.slice(0, 22) });
-    saveThreads();
-    renderThreads();
   }
 
   addUserTurn(message);
   const ctx = newTurn();
   try {
     await streamChat(message, threadId, ctx);
-    markPending(threadId, ctx.sawInterrupt);
   } catch (err) {
     ctx.error({ code: -1, message: String(err.message || err) });
   } finally {
+    await loadThreads();
     busy = false;
     sendBtn.disabled = false;
     input.focus();
@@ -795,10 +786,10 @@ async function resume(value) {
   const ctx = newTurn();
   try {
     await streamResume(threadId, value, ctx);
-    markPending(threadId, ctx.sawInterrupt);
   } catch (err) {
     ctx.error({ code: -1, message: String(err.message || err) });
   } finally {
+    await loadThreads();
     busy = false;
     sendBtn.disabled = false;
     input.focus();
@@ -835,8 +826,8 @@ input.addEventListener("input", () => {
 document.getElementById("newChat").onclick = () => {
   if (busy) return;
   threadId = null;
-  renderThreads();
   events.innerHTML = "";
+  renderThreads();
   showEmpty();
   input.focus();
 };
@@ -856,17 +847,21 @@ document.getElementById("themeBtn").onclick = () => {
   localStorage.setItem("theme", next);
 };
 
-/* 启动 */
+/* 启动：会话列表从服务端拉，直接打开最近一次会话 */
 const savedTheme = localStorage.getItem("theme");
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 
-renderThreads();
-if (threads.length) {
-  openThread(threads[0].id);
-} else {
-  showEmpty();
-}
-input.focus();
+localStorage.removeItem("threads");
+
+(async () => {
+  await loadThreads();
+  if (threads.length) {
+    await openThread(threads[0].thread_id);
+  } else {
+    showEmpty();
+  }
+  input.focus();
+})();
 </script>
 </body>
 </html>

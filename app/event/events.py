@@ -83,6 +83,15 @@ class HistoryMessage(BaseModel):
     id: str | None = None
 
 
+class ThreadSummary(BaseModel):
+    """会话列表项。由服务端从 checkpointer 推导，前端不自行维护会话清单。"""
+
+    thread_id: str
+    title: str = Field(..., description="取首条用户消息，为空时退化为 thread_id 前缀")
+    updated_at: str = Field("", description="最近一次检查点时间戳")
+    pending: bool = Field(False, description="是否有待人工确认的操作")
+
+
 class ThreadEvent(BaseModel):
     type: Literal[EventType.THREAD] = EventType.THREAD
     data: ThreadData

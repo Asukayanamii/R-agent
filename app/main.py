@@ -6,8 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.agent import close_runner, init_runner
 from app.api import chat
+from app.container import shutdown, startup
 from app.result.result import Result
 
 logging.basicConfig(
@@ -19,9 +19,9 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await init_runner()
+    await startup()
     yield
-    await close_runner()
+    await shutdown()
 
 
 app = FastAPI(
