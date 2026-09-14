@@ -5,6 +5,7 @@
 只负责"一轮对话之后要记录什么"这类业务规则。
 """
 
+import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,8 @@ from app.event.events import (
     ThreadSummary,
 )
 from app.models.entities import ThreadRecord, WorkspaceRecord
+
+logger = logging.getLogger(__name__)
 
 
 class ChatService:
@@ -72,19 +75,29 @@ class ChatService:
             )
             return
 
+        workspace = await self._workspace(thread_id)
+        logger.info(
+            "对话开始 thread=%s 消息=%d 字 工作区=%s",
+            thread_id,
+            len(message),
+            workspace or "应用目录",
+        )
         async for event in self._runner.stream(
-            thread_id=thread_id,
-            message=message,
-            workspace=await self._workspace(thread_id),
+            thread_id=thread_id, message=message, workspace=workspace
         ):
             yield event
         await self._record(thread_id, title=message)
 
     async def resume(self, thread_id: str, value: str) -> AsyncIterator[BaseModel]:
+        workspace = await self._workspace(thread_id)
+        logger.info(
+            "继续对话 thread=%s 选择=%s 工作区=%s",
+            thread_id,
+            value,
+            workspace or "应用目录",
+        )
         async for event in self._runner.resume(
-            thread_id=thread_id,
-            value=value,
-            workspace=await self._workspace(thread_id),
+            thread_id=thread_id, value=value, workspace=workspace
         ):
             yield event
         await self._record(thread_id, title="")
@@ -164,9 +177,11 @@ class ChatService:
         if not target.is_dir():
             raise InvalidInput(f"不是目录：{target.as_posix()}")
 
-        return await self._workspaces.bind(
+        bound = await self._workspaces.bind(
             thread_id, target.as_posix(), datetime.now(timezone.utc).isoformat()
         )
+        logger.info("绑定工作区 thread=%s -> %s", thread_id, bound)
+        return bound
 
     async def _record(self, thread_id: str, title: str) -> None:
         """
@@ -176,12 +191,19 @@ class ChatService:
         "中断态被新消息破坏、留下悬空 tool_calls"的坏死会话——那种会话同样需要
         用户注意，只是不能再 resume，只能新建。
         """
+        pending = await self._stuck_reason(thread_id) is not None
+        logger.debug(
+            "刷新索引 thread=%s 标题=%s pending=%s",
+            thread_id,
+            " ".join(title.split())[:60] or "-",
+            pending,
+        )
         await self._index.upsert(
             ThreadRecord(
                 thread_id=thread_id,
                 title=title,
                 updated_at=datetime.now(timezone.utc).isoformat(),
-                pending=await self._stuck_reason(thread_id) is not None,
+                pending=pending,
             )
         )
 
@@ -202,6 +224,7 @@ class ChatService:
         bound = await self._workspaces.paths_for(
             [record.thread_id for record in records]
         )
+        logger.debug("列出会话 %d 条（其中 %d 条有归属）", len(records), len(bound))
         items = []
         for record in records:
             found = bound.get(record.thread_id)
@@ -230,6 +253,7 @@ class ChatService:
         沙箱授权**不在这里清**——它按工作区归属，同工作区的其他会话还在用。
         跟着会话删授权，会把别的对话一起连坐。
         """
+        logger.info("删除会话 thread=%s", thread_id)
         await self._runner.delete_thread(thread_id)
         await self._index.delete(thread_id)
         await self._workspaces.unbind(thread_id)
@@ -242,6 +266,7 @@ class ChatService:
         """
         if await self._index.count() > 0:
             return 0
+        logger.debug("索引为空，从存储回填")
         records = await self._runner.scan_threads()
         for record in records:
             await self._index.upsert(record)
@@ -302,6 +327,7 @@ class ChatService:
         ghosts = await self._index.placeholder_ids()
         if not ghosts:
             return 0
+        logger.debug("占位行候选 %d 条，逐个核对存储里是否还有状态", len(ghosts))
         alive = {record.thread_id for record in await self._runner.scan_threads()}
         victims = [thread_id for thread_id in ghosts if thread_id not in alive]
         if not victims:

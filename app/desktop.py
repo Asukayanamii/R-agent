@@ -8,6 +8,7 @@ Windows 上 pywebview 使用 EdgeWebView2，即 Chromium 内核，
     python -m app.desktop
 """
 
+import logging
 import socket
 import sys
 import threading
@@ -17,6 +18,8 @@ import urllib.request
 import uvicorn
 
 from app.main import app
+
+logger = logging.getLogger(__name__)
 
 WINDOW_TITLE = "my-agent"
 WINDOW_SIZE = (1180, 780)
@@ -86,9 +89,11 @@ def main() -> None:
 
     port = _pick_port()
     base = f"http://127.0.0.1:{port}"
+    logger.info("桌面端启动：后端 %s，窗口标题 %s", base, WINDOW_TITLE)
 
     server = _serve_in_background(port)
     _wait_ready(f"{base}/chat/history?thread_id=__boot__")
+    logger.info("后端已就绪，打开窗口 %s/ui/", base)
 
     webview.create_window(
         WINDOW_TITLE,
@@ -100,6 +105,7 @@ def main() -> None:
     )
     webview.start(gui=GUI_BACKEND)
 
+    logger.info("窗口已关闭，正在停后端")
     server.should_exit = True
 
 

@@ -29,6 +29,7 @@
 """
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -39,6 +40,8 @@ from langgraph.types import interrupt
 from app.agent.runtime import current_workspace, workspace_relative
 from app.config import PROJECT_ROOT
 from app.exceptions import SandboxDenied
+
+logger = logging.getLogger(__name__)
 
 READ = "read"
 WRITE = "write"
@@ -186,17 +189,27 @@ def guard_path(raw: str, mode: str) -> Path:
     workspace = _workspace()
 
     if _denied(target, mode):
+        logger.warning("沙箱硬阻断：%s %s", MODE_TEXT[mode], _label(target))
         raise SandboxDenied(
             f"{_label(target)} 是受保护路径，不允许{MODE_TEXT[mode]}。"
             "该限制是硬性的，无法通过授权绕过。"
         )
 
     if target == workspace or workspace in target.parents:
+        # 工作区内：沙箱的常规路径，不打 INFO，免得把日志淹掉
+        logger.debug("工作区内放行：%s %s", MODE_TEXT[mode], _label(target))
         return target
 
     if _covers(target, mode):
+        logger.debug("命中已有授权：%s %s", MODE_TEXT[mode], _label(target))
         return target
 
+    logger.info(
+        "请求授权：%s %s（工作区 %s）",
+        MODE_TEXT[mode],
+        target.as_posix(),
+        workspace.as_posix(),
+    )
     try:
         choice = interrupt(
             {
@@ -210,21 +223,26 @@ def guard_path(raw: str, mode: str) -> Path:
     except RuntimeError as exc:
         # 不在图的执行上下文里（直接调工具、跑测试、将来的 CLI），没地方弹卡片。
         # 这种情况下只能拒绝，并且要把原因说清楚，而不是漏一个 RuntimeError 出去。
+        logger.warning("不在会话中，无法征求授权，直接拒绝：%s", target.as_posix())
         raise SandboxDenied(
             f"{target.as_posix()} 在当前工作区之外，"
             "且当前不在会话中，无法征求授权，已拒绝。"
         ) from exc
 
     if choice == REFUSE:
+        logger.info("用户拒绝：%s %s", MODE_TEXT[mode], target.as_posix())
         raise SandboxDenied(f"用户拒绝了{MODE_TEXT[mode]} {target.as_posix()}")
 
     if choice == REMEMBER_GLOBAL:
         _remember(target, mode, REMEMBER_GLOBAL)
+        logger.info("用户授权并记住（所有工作区）：%s %s", MODE_TEXT[mode], target.as_posix())
     elif choice == REMEMBER_WORKSPACE:
         _remember(target, mode, REMEMBER_WORKSPACE)
+        logger.info("用户授权并记住（本工作区）：%s %s", MODE_TEXT[mode], target.as_posix())
     else:
         # 允许（本次运行有效）：只放进内存，不落盘
         entry = _workspace_grant(workspace)
         (entry.write_paths if mode == WRITE else entry.read_paths).add(target)
+        logger.info("用户授权（本次运行有效）：%s %s", MODE_TEXT[mode], target.as_posix())
 
     return target

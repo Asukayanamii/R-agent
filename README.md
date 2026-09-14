@@ -27,10 +27,12 @@ cp .env.example .env
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `LLM_API_KEY` | 无 | **未配置时自动降级为桩实现**，接口仍可调通 |
+| `LLM_API_KEY` | 无 | **没配就没法对话**：发消息会直接收到一条 `error` 事件说明原因（会话列表、浏览目录、删除会话照常可用） |
 | `LLM_BASE_URL` | `https://api.deepseek.com/v1` | 百炼填 `https://dashscope.aliyuncs.com/compatible-mode/v1`，Ollama 填 `http://localhost:11434/v1` |
 | `LLM_MODEL` | `deepseek-chat` | 百炼可用 `qwen-plus`，Ollama 可用 `qwen3:8b` |
 | `SQLITE_PATH` | `./data/checkpoints.db` | 会话状态落盘位置。相对路径按项目根解析，不受启动目录影响；留空则仅存于进程内存 |
+| `AGENT_STUB` | `0` | 置 `1` 时用桩实现（复读 + 假的工具卡片 / 人工确认），用于没有模型时调前端交互。**不是兜底**，只认显式开关 |
+| `LOG_LEVEL` | `INFO` | 日志级别，约定见下面「日志」。排查问题时改 `DEBUG` 重启 |
 
 ## 启动
 
@@ -54,6 +56,10 @@ python -m uvicorn app.main:app --reload --port 8000
 | GET | `/chat/browse` | 列出目录，供挑选工作区 |
 
 非流式接口走 `Result` 包装（`{code, message, data}`，`code=0` 为成功）。
+
+**异常有两个出口，各自兜住全部异常**：流式在 `app/event/stream.py` 补一帧 `error` + `done`，
+非流式由 `app/handler/` 的全局处理器包成 500 + `Result`。两边都返回异常原文（堆栈只进服务端日志），
+所以上游（模型服务、数据库）出错既不会带走进程，前端也总能拿到明确的结束标记。
 
 `/chat/stream` 请求体：
 
@@ -251,6 +257,7 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 ```
 
 - `app/container.py` 是**组装根**：选哪个实现、连接何时开关，都属于应用装配
+- `app/handler/` 是**全局异常处理**：非流式那半边的兜底出口（流式在 `app/event/stream.py`）
 - `app/event/` 是**协议模型**（wire format）：前端能看见的一切形状。判据只有一条——
   **要不要跨 HTTP 边界**：要 → 这里是 pydantic，供 OpenAPI；只在层间流转 → 放 `app/models/`，
   dataclass 不带校验。agent 层直接产出数据面事件，业务层把实体映射成列表项与回执，
@@ -260,11 +267,32 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 - checkpointer **不单独抽 DAO**：那是 LangGraph 自己的存储，不是我们写的 SQL
 
 **`app/` 下每个关注点都是一级包**，不放散落的同名模块——`app/config/`、`app/result/`、
-`app/constant/` 都一样，这样 `from app.config import X` 是唯一入口，不出现
-`app.exceptions.exceptions` 这种双重叠词。包内的代码直接写在 `__init__.py` 里。
+`app/constant/` 都一样。包内的模块名**别和包同名**，否则会出现 `app.exceptions.exceptions`
+这种双重叠词；所以"默认名字必然等于包名"的那几个（`config`、`exceptions`、`handler`）直接把
+代码写在 `__init__.py` 里，其余一律具名模块（`api/chat.py`、`event/events.py`、`dao/workspace_dao.py`）。
 
 > `app/config/__init__.py` 的 `PROJECT_ROOT` 是**按目录层级数出来的**，挪文件必须同步改。
 > 它算错不会报错，只会让相对路径的配置静默写到别处去，所以那里有启动断言兜底。
+
+## 日志
+
+级别由 `LOG_LEVEL` 控制（默认 `INFO`），约定：
+
+| 级别 | 记什么 | 例子 |
+| --- | --- | --- |
+| `ERROR` | 需要人去处理的失败 | 未处理的异常、对话流异常（都带堆栈） |
+| `WARNING` | 降级与拒绝 | 没配 key、沙箱硬阻断、工具被拒绝、目录不存在 |
+| `INFO` | 主线里程碑 | 每轮对话起止、工具调用与用时、等待确认、绑定工作区、删除会话、启动迁移 |
+| `DEBUG` | 细节 | 每次写库、路径检查放行、历史与扫描条数、前端关键转场 |
+
+排查问题时把 `LOG_LEVEL` 改成 `DEBUG` 重启即可。带 `thread=` 的行能对上具体会话；
+两个异常出口（流式 / 非流式）都先写日志再回响应。
+
+> 级别只作用于 `app.*`：第三方库统一压在 `WARNING`，否则 `aiosqlite` 会把每条 SQL
+> 和参数 blob 都打出来，自己人的日志反而找不到。uvicorn 的访问日志不受影响。
+
+> 错误信息就是异常原文，不做翻译——面向程序员的项目，原文比客套话有用。
+> 前端也会把 `error` 帧与关键转场打到浏览器 console（前缀 `[my-agent]`）。
 
 ## 扩展点
 

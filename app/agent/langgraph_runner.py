@@ -5,8 +5,10 @@
 上层路由与前端不感知 LangGraph 的存在。
 """
 
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
@@ -41,6 +43,8 @@ from app.event.events import (
 )
 from app.models.entities import ThreadRecord
 
+logger = logging.getLogger(__name__)
+
 SYSTEM_PROMPT = (
     "你是一个在用户指定工作区里干活的编程助手。"
     "bash 与文件类工具的工作目录都是当前工作区根目录；"
@@ -52,6 +56,12 @@ SYSTEM_PROMPT = (
 TOOL_MAP = {tool.name: tool for tool in TOOLS}
 
 REJECT_MESSAGE = "用户拒绝执行该操作。"
+
+
+def _brief(value: object, limit: int = 200) -> str:
+    """日志用：压成一行并截断——工具参数与返回值可能是很长的字典或多行文本。"""
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def _text_of(message: object) -> str:
@@ -105,12 +115,14 @@ async def _run_tools(state: MessagesState):
                 }
             )
             approved[call["id"]] = decision == "确认"
+            logger.info("工具审批 name=%s 决定=%s", call["name"], decision)
 
     results = []
     token = _workspace_token(config)
     try:
         for call in calls:
             if not approved.get(call["id"], True):
+                logger.warning("工具被拒绝 name=%s", call["name"])
                 results.append(
                     ToolMessage(content=REJECT_MESSAGE, tool_call_id=call["id"])
                 )
@@ -118,6 +130,7 @@ async def _run_tools(state: MessagesState):
 
             tool = TOOL_MAP.get(call["name"])
             if tool is None:
+                logger.warning("模型要调未知工具 name=%s", call["name"])
                 results.append(
                     ToolMessage(
                         content=f"未知工具：{call['name']}",
@@ -132,6 +145,8 @@ async def _run_tools(state: MessagesState):
             except GraphBubbleUp:
                 raise
             except Exception as exc:
+                # 工具自己报错不算致命：写成 ToolMessage 让模型看到并解释，日志留一条
+                logger.warning("工具执行失败 name=%s：%s", call["name"], exc)
                 results.append(
                     ToolMessage(
                         content=f"工具执行失败：{exc}",
@@ -151,17 +166,23 @@ async def _run_tools(state: MessagesState):
 
 
 def build_graph(checkpointer: BaseCheckpointSaver, model: BaseChatModel | None = None):
-    """agent ↔ tools 循环，checkpointer 负责 thread_id 维度的多轮状态。"""
+    """
+    agent ↔ tools 循环，checkpointer 负责 thread_id 维度的多轮状态。
+
+    `tools_condition` 按最后一条 AI 消息里有没有 tool_calls 分流：有就去 tools 执行，
+    没有就结束（END）。工具结果以 ToolMessage 回到消息列表，再从 agent 走一遍。
+    """
     model = model or ChatOpenAI(
         model=LLM_MODEL,
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
         temperature=0,
-        streaming=True,
+        streaming=True,  # 关掉流式就没有 text_delta，前端只能等整段回复
     )
     model_with_tools = model.bind_tools(TOOLS)
 
     async def call_model(state: MessagesState):
+        # 节点本身无状态：每轮都把 system prompt 重新拼在历史前面，历史来自 checkpointer
         response = await model_with_tools.ainvoke(
             [{"role": "system", "content": SYSTEM_PROMPT}, *state["messages"]]
         )
@@ -219,6 +240,7 @@ class LangGraphRunner:
     async def history(self, thread_id: str) -> list[HistoryMessage]:
         snapshot = await self.graph.aget_state(self._config(thread_id))
         result: list[HistoryMessage] = []
+        # 只回人类与模型的文本：工具消息不进历史，前端恢复的是对话本身
         for message in snapshot.values.get("messages", []):
             if isinstance(message, HumanMessage):
                 role = "user"
@@ -234,6 +256,7 @@ class LangGraphRunner:
                     role=role, content=text, id=getattr(message, "id", None)
                 )
             )
+        logger.debug("读取历史 thread=%s 条数=%d", thread_id, len(result))
         return result
 
     async def delete_thread(self, thread_id: str) -> None:
@@ -244,6 +267,7 @@ class LangGraphRunner:
         两张表（实测确认）。自己写 SQL 很容易漏掉 writes。
         """
         await self.checkpointer.adelete_thread(thread_id)
+        logger.debug("已删除检查点 thread=%s", thread_id)
 
     @staticmethod
     def _title_of(snapshot: object) -> str:
@@ -300,6 +324,7 @@ class LangGraphRunner:
                 latest[thread_id] = checkpoint.checkpoint.get("ts", "")
                 if len(latest) >= limit:
                     break
+        logger.debug("扫描到 %d 个会话，逐个取状态中", len(latest))
 
         result = []
         for thread_id, timestamp in latest.items():
@@ -312,14 +337,24 @@ class LangGraphRunner:
                     pending=bool(snapshot.interrupts),
                 )
             )
+        logger.debug("扫描完成：%d 条记录", len(result))
         return result
 
     async def _run(
         self, thread_id: str, workspace: str | None, inputs: object
     ) -> AsyncIterator[BaseModel]:
+        """
+        跑一次图，把 LangGraph 事件翻译成本项目的协议事件。
+
+        翻译表：`on_chat_model_stream` → text_delta、`on_tool_start/end` → tool_start/end。
+        一轮里模型可能被调用多次（每次工具返回后都要再问一次），所以 usage 要**累加**，
+        message_id 取最后一次的。中断不在事件流里（见 LESSONS），跑完从状态快照读。
+        """
         config = self._config(thread_id, workspace)
         usage = Usage()
         message_id = ""
+        started = monotonic()
+        tool_started: dict[str, float] = {}
 
         async for event in self.graph.astream_events(
             inputs, config=config, version="v2"
@@ -327,6 +362,7 @@ class LangGraphRunner:
             kind = event["event"]
 
             if kind == "on_chat_model_stream":
+                # 模型边生成边推 chunk，增量直接透传，前端累加即得完整回复
                 text = _text_of(event["data"].get("chunk"))
                 if text:
                     yield TextDeltaEvent(data=TextDeltaData(text=text))
@@ -342,18 +378,32 @@ class LangGraphRunner:
 
             elif kind == "on_tool_start":
                 args = event["data"].get("input") or {}
+                tool_args = args if isinstance(args, dict) else {"input": args}
+                name = event.get("name", "")
+                tool_started[event["run_id"]] = monotonic()
+                logger.info(
+                    "工具开始 name=%s thread=%s 参数=%s",
+                    name,
+                    thread_id,
+                    _brief(tool_args),
+                )
                 yield ToolStartEvent(
-                    data=ToolStartData(
-                        id=event["run_id"],
-                        name=event.get("name", ""),
-                        args=args if isinstance(args, dict) else {"input": args},
-                    )
+                    data=ToolStartData(id=event["run_id"], name=name, args=tool_args)
                 )
 
             elif kind == "on_tool_end":
                 output = event["data"].get("output")
                 failed = getattr(output, "status", None) == "error"
                 result = _text_of(output)
+                elapsed = monotonic() - tool_started.pop(event["run_id"], monotonic())
+                logger.info(
+                    "工具结束 name=%s thread=%s ok=%s 用时=%.2fs 结果=%s",
+                    event.get("name", ""),
+                    thread_id,
+                    not failed,
+                    elapsed,
+                    _brief(result),
+                )
                 yield ToolEndEvent(
                     data=ToolEndData(
                         id=event["run_id"],
@@ -366,8 +416,17 @@ class LangGraphRunner:
         # 中断不出现在 astream_events 里，只能跑完从状态快照读。
         snapshot = await self.graph.aget_state(config)
         for item in snapshot.interrupts:
-            yield InterruptEvent(data=self._to_interrupt_data(item))
+            data = self._to_interrupt_data(item)
+            logger.info("等待人工确认 thread=%s：%s", thread_id, _brief(data.prompt))
+            yield InterruptEvent(data=data)
 
+        logger.debug(
+            "本轮跑完 thread=%s 用时=%.2fs tokens=%d/%d",
+            thread_id,
+            monotonic() - started,
+            usage.input_tokens,
+            usage.output_tokens,
+        )
         yield MessageEndEvent(
             data=MessageEndData(message_id=message_id or uuid4().hex[:8], usage=usage)
         )

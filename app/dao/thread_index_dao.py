@@ -7,11 +7,14 @@
 工作区已迁出本表，见 workspace_dao；这里只留了"把历史列迁走再删掉"的两个方法。
 """
 
+import logging
 from collections.abc import Sequence
 
 import aiosqlite
 
 from app.models.entities import ThreadRecord
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS thread_index (
@@ -48,6 +51,9 @@ class ThreadIndexDao:
 
     async def upsert(self, record: ThreadRecord) -> None:
         """标题一旦有值就不再用空串覆盖，避免无关字段被清掉。"""
+        logger.debug(
+            "索引写入 thread=%s pending=%s", record.thread_id, record.pending
+        )
         await self._conn.execute(
             """
             INSERT INTO thread_index (thread_id, title, updated_at, pending)
@@ -86,6 +92,7 @@ class ThreadIndexDao:
 
     async def delete(self, thread_id: str) -> None:
         """删除索引行。不存在的会话静默通过——DELETE 应当是幂等的。"""
+        logger.debug("索引删除 thread=%s", thread_id)
         await self._conn.execute(
             "DELETE FROM thread_index WHERE thread_id = ?", (thread_id,)
         )
@@ -101,6 +108,7 @@ class ThreadIndexDao:
             tuple(thread_ids),
         )
         await self._conn.commit()
+        logger.debug("索引批量删除 %d 行", cursor.rowcount)
         return cursor.rowcount
 
     async def count(self) -> int:

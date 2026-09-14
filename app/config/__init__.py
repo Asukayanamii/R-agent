@@ -28,6 +28,15 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1").strip()
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat").strip()
 
+# 显式启用桩实现（复读 + 演练工具卡片 / 人工确认），用于没有模型时调前端交互。
+# 它**不是**兜底：没配 key 时对话接口直接报错，见 app/agent/runner.py 的 UnconfiguredRunner。
+STUB_ENABLED = os.getenv("AGENT_STUB", "").strip() == "1"
+
+# 日志级别。约定见 README「日志」：ERROR 是需要人处理的失败，WARNING 是降级与拒绝，
+# INFO 是主线里程碑（每轮对话、工具调用、迁移），DEBUG 是每次写库这类细节。
+# 排查问题时置 DEBUG 重启即可；级别名写错时退回 INFO。
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+
 
 def _resolve(raw: str) -> str:
     """
@@ -46,5 +55,5 @@ SQLITE_PATH = _resolve(os.getenv("SQLITE_PATH", "./data/checkpoints.db"))
 
 
 def llm_configured() -> bool:
-    """未配置 key 时降级为桩实现，保证接口在无模型环境下依然可调通。"""
+    """没配 key 时对话接口直接说明情况；列表、浏览、删除这些不依赖模型的接口照常可用。"""
     return bool(LLM_API_KEY)

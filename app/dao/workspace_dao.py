@@ -9,6 +9,7 @@
 拆成两个类只会让同一个动作跨两个对象。
 """
 
+import logging
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -16,6 +17,8 @@ from pathlib import Path
 import aiosqlite
 
 from app.models.entities import WorkspaceRecord
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = (
     """
@@ -83,6 +86,7 @@ class WorkspaceDao:
         """
         canonical = Path(path).as_posix()
         key = _path_key(canonical)
+        logger.debug("工作区登记 %s", canonical)
         await self._conn.execute(
             "INSERT OR IGNORE INTO workspace (path_key, path, name, created_at) "
             "VALUES (?, ?, ?, ?)",
@@ -104,6 +108,7 @@ class WorkspaceDao:
     async def bind(self, thread_id: str, path: str, updated_at: str) -> str:
         """把会话绑到工作区，返回库里的规范路径。重复绑定以最后一次为准。"""
         record = await self.ensure(path, updated_at)
+        logger.debug("绑定写入 thread=%s -> %s", thread_id, record.path)
         await self._conn.execute(
             """
             INSERT INTO thread_workspace (thread_id, path_key, updated_at)
@@ -134,6 +139,7 @@ class WorkspaceDao:
         if not thread_ids:
             return
         record = await self.ensure(path, updated_at)
+        logger.debug("批量绑定 %d 个会话 -> %s", len(thread_ids), record.path)
         await self._conn.executemany(
             "INSERT OR IGNORE INTO thread_workspace (thread_id, path_key, updated_at) "
             "VALUES (?, ?, ?)",
@@ -143,6 +149,7 @@ class WorkspaceDao:
 
     async def unbind(self, thread_id: str) -> None:
         """删掉会话的绑定。不存在的静默通过——DELETE 应当是幂等的。"""
+        logger.debug("解绑删除 thread=%s", thread_id)
         await self._conn.execute(
             "DELETE FROM thread_workspace WHERE thread_id = ?", (thread_id,)
         )
@@ -158,6 +165,7 @@ class WorkspaceDao:
             tuple(thread_ids),
         )
         await self._conn.commit()
+        logger.debug("批量解绑 %d 行", cursor.rowcount)
         return cursor.rowcount
 
     async def for_path(self, path: str) -> WorkspaceRecord | None:

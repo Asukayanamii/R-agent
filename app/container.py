@@ -1,15 +1,15 @@
 """
 组装根：把三层拼起来，并管理它们的生命周期。
 
-"有 key 走 LangGraph、无 key 降级桩"以及连接何时开关，都是应用装配的事情，
-不属于表现层、业务层或数据访问层中的任何一层，因此单独放在这里。
+"有 key 走 LangGraph、没 key 直接报错、显式开了开关才用桩"以及连接何时开关，都是应用装配
+的事情，不属于表现层、业务层或数据访问层中的任何一层，因此单独放在这里。
 """
 
 import logging
 from contextlib import AsyncExitStack
 from pathlib import Path
 
-from app.agent.runner import AgentRunner, StubRunner
+from app.agent.runner import AgentRunner, StubRunner, UnconfiguredRunner
 from app.dao.thread_index_dao import ThreadIndexDao
 from app.dao.workspace_dao import WorkspaceDao
 from app.service.chat_service import ChatService
@@ -21,13 +21,25 @@ _service: ChatService | None = None
 
 
 async def _build_runner() -> AgentRunner:
-    from app.config import SQLITE_PATH, llm_configured
+    from app.config import (
+        LLM_BASE_URL,
+        LLM_MODEL,
+        SQLITE_PATH,
+        STUB_ENABLED,
+        llm_configured,
+    )
 
-    if not llm_configured():
-        logger.warning("未配置 LLM_API_KEY，/chat/stream 正在使用桩实现")
+    if STUB_ENABLED:
+        logger.warning("AGENT_STUB=1，对话走桩实现：复读消息、不调模型")
         return StubRunner()
 
+    if not llm_configured():
+        logger.warning("未配置 LLM_API_KEY，对话接口会直接返回错误说明")
+        return UnconfiguredRunner()
+
     from app.agent.langgraph_runner import LangGraphRunner
+
+    logger.info("对话走模型：model=%s base_url=%s", LLM_MODEL, LLM_BASE_URL)
 
     if SQLITE_PATH:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -97,6 +109,7 @@ async def shutdown() -> None:
     global _service
     await _exit_stack.aclose()
     _service = None
+    logger.debug("服务已关闭，连接已释放")
 
 
 def get_service() -> ChatService:
