@@ -59,6 +59,15 @@ class AgentRunner(Protocol):
         """读取既有会话的消息，供前端恢复。不存在的会话返回空列表。"""
         ...
 
+    async def delete_thread(self, thread_id: str) -> None:
+        """
+        删除该会话在存储里的全部状态，不可恢复。
+
+        只删索引行是不够的：checkpointer 里还留着检查点，下一次索引重建会把会话
+        重新枚举回来。所以索引层的删除必须配合这个。不存在的会话静默通过。
+        """
+        ...
+
     async def is_interrupted(self, thread_id: str) -> bool:
         """该会话是否停在待人工确认处。"""
         ...
@@ -107,6 +116,10 @@ class StubRunner:
 
     async def history(self, thread_id: str) -> list[HistoryMessage]:
         return list(self._history.get(thread_id, []))
+
+    async def delete_thread(self, thread_id: str) -> None:
+        self._pending.pop(thread_id, None)
+        self._history.pop(thread_id, None)
 
     async def is_interrupted(self, thread_id: str) -> bool:
         return thread_id in self._pending

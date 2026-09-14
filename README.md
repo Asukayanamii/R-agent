@@ -9,46 +9,13 @@
 
 ## 依赖安装
 
-推荐 conda：
-
 ```bash
 conda env create -f environment.yml
 conda activate my_agent
 ```
 
-已有环境或使用 venv：
-
-```bash
-pip install -r requirements.txt
-```
-
-## 分层
-
-经典三层，依赖方向单向向下，每层只做自己的事：
-
-```
-app/api/          表现层      HTTP、请求/响应 DTO、SSE 外壳
-     ↓
-app/service/      业务层      编排 Agent 执行、维护会话索引
-     ↓
-app/dao/          数据访问层  只读写 thread_index 表，不含业务规则
-app/agent/        Agent 运行时 图定义、事件映射、checkpointer 访问
-     ↓
-app/models/       领域实体    ThreadRecord，供 dao 与 agent 共用
-```
-
-- **`app/container.py` 是组装根**：选哪个实现（有 key 走 LangGraph、无 key 降级桩）、
-  连接何时开关，都属于应用装配，不放进任何一层。
-- **`app/event/` 是协议模型**（wire format，含 `ThreadSummary` 等 DTO），
-  下层不 import 它；dao 只认 `app/models/entities.py` 里的领域实体。
-- **`app/exceptions/` 放自定义异常**：`SandboxDenied` 由沙箱抛出、六个文件工具捕获后
-  作为工具结果返回；`InvalidInput` 由业务层抛出、表现层捕获后转成 `Result.fail`。
-  都继承 `ValueError`，因为语义上就是"传进来的值不可接受"。代码直接放 `__init__.py`，
-  不再套一层同名模块——那会变成 `from app.exceptions.exceptions import ...`。
-- **checkpointer 不单独抽 DAO**：那是 LangGraph 自己的存储，通过 LangGraph 的 API 访问，
-  不是我们写的 SQL。只为我们自己拥有的表写 DAO。
-- 改某层的实现不需要动其他层：换存储动 `container.py`，换业务规则动 `service/`，
-  换 SQL 动 `dao/`。
+已有环境或使用 venv：`pip install -r requirements.txt`。
+桌面模式额外需要 `pip install -r requirements-desktop.txt`。
 
 ## 配置
 
@@ -63,7 +30,7 @@ cp .env.example .env
 | `LLM_API_KEY` | 无 | **未配置时自动降级为桩实现**，接口仍可调通 |
 | `LLM_BASE_URL` | `https://api.deepseek.com/v1` | 百炼填 `https://dashscope.aliyuncs.com/compatible-mode/v1`，Ollama 填 `http://localhost:11434/v1` |
 | `LLM_MODEL` | `deepseek-chat` | 百炼可用 `qwen-plus`，Ollama 可用 `qwen3:8b` |
-| `SQLITE_PATH` | `./data/checkpoints.db` | 会话状态落盘位置。**相对路径按项目根解析**，不受启动目录影响；留空则仅存于进程内存 |
+| `SQLITE_PATH` | `./data/checkpoints.db` | 会话状态落盘位置。相对路径按项目根解析，不受启动目录影响；留空则仅存于进程内存 |
 
 ## 启动
 
@@ -80,22 +47,13 @@ python -m uvicorn app.main:app --reload --port 8000
 | --- | --- | --- |
 | POST | `/chat/stream` | 发起一轮对话，SSE 流 |
 | POST | `/chat/resume` | 带着用户选择，从 `interrupt` 处继续，SSE 流 |
-| GET | `/chat/history` | 读取既有会话消息，供前端恢复。走 `Result` 包装 |
-| GET | `/chat/threads` | 列出既有会话，按最近更新倒序。走 `Result` 包装 |
-| PUT | `/chat/workspace` | 设置会话的工作区，也就是沙箱的信任边界 |
-| GET | `/chat/browse` | 列出目录，供挑选工作区。**刻意不受沙箱约束** |
+| GET | `/chat/history` | 读取既有会话消息，供前端恢复 |
+| GET | `/chat/threads` | 列出既有会话，按最近更新倒序；一并给出默认工作区 |
+| DELETE | `/chat/threads/{id}` | 删除会话，硬删；不存在的会话静默通过（幂等） |
+| PUT | `/chat/workspace` | 把会话绑定到工作区，即沙箱的信任边界（新会话诞生时写一次） |
+| GET | `/chat/browse` | 列出目录，供挑选工作区 |
 
-> **会话列表为什么放在服务端**：`localStorage` 按 origin（含端口）隔离，而桌面端
-> 每次启动都随机挑端口，origin 随之改变，前端自持的会话清单重启后必然是空的——
-> 即便数据早已落库。因此列表以 `/chat/threads` 为唯一来源，前端只用 `localStorage`
-> 记住主题偏好。
->
-> **为什么还要一张索引表**：checkpointer 只提供"列出检查点"（`alist(None)`），拿不到
-> 会话维度的清单——一个会话对应多条检查点。若每次列会话都枚举检查点再逐个查状态，
-> 是 N+1 次查询。因此 `app/agent/thread_index.py` 维护一张 `thread_index` 表
-> （thread_id / title / updated_at / pending），在写入侧随每轮对话 upsert，
-> 列表接口退化成一次普通查询。表与 checkpointer 共用同一个 sqlite 文件，
-> 换 Postgres 时一并迁走。索引为空而库里有会话时会自动回填一次。
+非流式接口走 `Result` 包装（`{code, message, data}`，`code=0` 为成功）。
 
 `/chat/stream` 请求体：
 
@@ -106,10 +64,12 @@ python -m uvicorn app.main:app --reload --port 8000
 `/chat/resume` 请求体（`thread_id` 必须与中断时一致）：
 
 ```json
-{"thread_id": "percall-demo", "value": "确认"}
+{"thread_id": "demo", "value": "拒绝"}
 ```
 
-两个流式接口响应格式相同，均为 `text/event-stream`，每帧 `data` 形如 `{"type": ..., "data": {...}}`：
+### 事件协议
+
+两个流式接口响应均为 `text/event-stream`，每帧 `data` 形如 `{"type": ..., "data": {...}}`：
 
 | type | 说明 |
 | --- | --- |
@@ -121,12 +81,16 @@ python -m uvicorn app.main:app --reload --port 8000
 | `error` | 出错，`code` 与 `Result` 语义一致 |
 | `done` | 流结束，必为最后一帧 |
 
-前端只需 `switch (type)`，未知 type 静默忽略，后端新增事件不会影响已上线前端。
+前端只需 `switch (type)`，**未知 type 静默忽略**，后端新增事件不会影响已上线前端。
 `error` 与 `done` 由 `app/event/stream.py` 统一收口，实现类无需产出。
+
+两个前端实现时要知道的约定：**多调用时中断逐个出现**，每次 `resume` 解决一个、
+响应里会带出下一个 `interrupt`；**同一节点的多个 interrupt 复用同一个 id**，
+所以不能用 id 给卡片去重。
 
 ## 工具
 
-七个，参考 Pi（earendil-works/pi）的设计，一个工具一个文件：
+八个，参考 Pi（earendil-works/pi）的设计，一个工具一个文件：
 
 | 工具 | 作用 | 要点 |
 | --- | --- | --- |
@@ -136,42 +100,50 @@ python -m uvicorn app.main:app --reload --port 8000
 | `ls` | 列目录 | 目录在前，带大小与修改时间 |
 | `find` | 按 glob 找文件 | `*` 跨目录，结果排序 |
 | `grep` | 按正则搜内容 | 支持 glob 过滤与忽略大小写；跳过噪音目录与二进制文件 |
-| `bash` | 执行命令 | 见下 |
+| `bash` | 执行命令 | 流式读取、内存有上限、超时杀进程树、Windows 优先用 Git Bash |
 | `get_current_time` | 取当前时间 | 八种格式（`iso` 默认 / `timestamp` / `date` / `time` / `human` / `cn` / `rfc` / `full`），支持 IANA 命名时区 |
 
-### 工作区
+**所有工具的输出都有上限**（50KB / 2000 行）。`read` 保留开头并提示续读位置；
+`bash` / `grep` / `find` / `ls` 保留尾部或计数。截断时会**明确告知丢了多少**——
+不告诉模型的话它会反复执行同一条命令。
 
-**信任边界是工作区**，不是会话。同一个工作区的所有对话共享同一份沙箱授权；
-换工作区就是换了一层边界。不设工作区时，退回应用所在目录。
+## 工作区
 
-默认工作区就是本仓库，所以想让它去改别的项目，得先在工作区选择器里指过去
-（`GET /chat/browse` + `PUT /chat/workspace`）。选择器在页头，点工作区名字就展开。
+**信任边界是工作区，不是会话。** 同一个工作区的所有对话共享同一份沙箱授权。
 
-`bash` 的 cwd 与六个文件工具的路径基准**都是工作区根目录**——两边必须一致，
-否则 agent 会看到两个不同的"当前目录"。
+工作区在库里是实体：`workspace` 表存路径（`path_key` 归一化后判重，同一目录不会因为大小写
+写法不同裂成两个分组），`thread_workspace` 表存会话归属。**归属不参与索引重建**——
+`thread_index` 被重建后分组照旧。
 
-**只有用户能改工作区**。agent 若能改自己的边界，边界就不存在了。
+- **每个会话都有且只有一个工作区。** 没挑过的时候就是应用所在目录——它和用户自己挑的
+  工作区一视同仁：同一个实体、同一种分组、同一条绑定路径，侧边栏里没有单独的「应用目录」分组
+  （`GET /chat/threads` 会把它作为 `default_workspace` 一并返回）
+- 选目录 = **开一条绑定该目录的新对话**，绝不改动已打开的会话；「新对话」沿用此刻所在的工作区
+- 绑定发生在第一条消息发出之前（会话诞生时）。只选了目录却没说话，库里不会留下任何东西
+- 归属一旦定下就不会被别的动作改掉，只有删除会话才会清掉
+- 选目录的方式：**桌面端弹 Windows 原生目录选择器**（pywebview 的 `FileDialog.FOLDER`）；
+  浏览器里没有这个能力，退回页内浏览面板（走 `GET /chat/browse`）
+- 侧边栏**按工作区分组**，组内再按今天/昨天/更早分。组头可折叠（状态记在 localStorage），
+  悬停时露出的 `+` 直接在这个工作区里开新会话；目录已不存在的组会标出来、不给加号
+- `bash` 的 cwd 与六个文件工具的路径基准**都是工作区根目录**，两边必须一致
+- **只有用户能改工作区**——agent 若能改自己的边界，边界就不存在了
 
 > `GET /chat/browse` 可以列举任意目录，这是刻意的：沙箱限制的是 agent，不是用户。
-> 本地单用户部署没问题，但若要把 API 暴露出去，**必须先给它加鉴权或删掉**。
+> 本地单用户部署没问题，但要把 API 暴露出去，**必须先给它加鉴权或删掉**。
 
-### 路径沙箱
+## 路径沙箱
 
-六个文件工具的路径都过 `app/agent/sandbox.py` 的守卫，三种结果：
+六个文件工具的路径都过 `app/agent/sandbox.py` 的守卫：
 
 | 情况 | 行为 |
 | --- | --- |
 | 工作区内、未命中禁区 | 直接放行 |
 | 命中绝对禁区 | **硬阻断，永不提示** |
-| 工作区之外 | **弹确认卡片询问**，四个选项 |
+| 工作区之外 | **弹确认卡片询问** |
 
-绝对禁区包括 `.env`、`*.pem`、`*.key`、`*id_rsa*`、`.git/`、`data/`。
-`data/` 同时进读写列表是刻意的——那是应用自己的会话库，**能读就能 grep 出别的会话内容**；
-`.git/` 同理，`config` 里的 remote URL 可能带 token。
+绝对禁区：`.env`、`*.pem`、`*.key`、`*id_rsa*`、`.git/`、`data/`。
 
-读写列表不完全相同：读不含 `.env.*`（`.env.example` 这类模板该能读），写则包含。
-
-**询问时的四个选项**，对应三层授权来源：
+询问时四个选项，对应三层授权来源：
 
 | 选项 | 存哪 | 生效范围 |
 | --- | --- | --- |
@@ -180,136 +152,74 @@ python -m uvicorn app.main:app --reload --port 8000
 | 记住（仅此工作区） | `<工作区>/.my_agent/sandbox.json` | 本工作区，持久 |
 | 记住（所有工作区） | `~/.my_agent/sandbox.json` | 所有工作区，持久 |
 
-授权粒度是**被问到的那一个路径本身**：同意一个文件不等于同意整个目录；
-被拒绝的路径不会产生任何授权。授权 **agent 读不到也改不了**——边界必须对 agent 不透明，
-否则它会学着去探测它。
-
-> **工作区级的授权文件写在你的项目里**（`.my_agent/sandbox.json`）。这是照 pi-sandbox
-> 的做法（它写 `.pi/sandbox.json`），好处是授权跟着项目走。但里面存的是**本机绝对路径**，
-> 提交给别人没有意义，所以它在 `.gitignore` 里。
-
-> 副作用：授权是**进程级**的，同一进程内所有用户共享。当前是本地单用户部署不成问题；
-> 将来要支持多用户，key 得从工作区改成 `(用户, 工作区)`。
+授权粒度是**被问到的那一个路径本身**：同意一个文件不等于同意整个目录。
 
 > **bash 不受沙箱约束。** 它的 cwd 跟随工作区，但 shell 一条 `cd /` 就出去了——
-> 进程内检查对它无效。真隔离只能来自操作系统或容器。
-> 别把上面的限制当成覆盖 bash 的安全边界。
+> 进程内检查对它无效。别把这层限制当成覆盖 bash 的安全边界。
 
-> **改 `_run_tools` 时注意**：必须保留 `except GraphBubbleUp: raise`。
-> `interrupt()` 抛的就是它，被 `except Exception` 接住的话，
-> 工具内部的授权询问会退化成一条"工具执行失败"。这条是实测确认过的。
+## 人工确认
 
-**输出统一有上限**（50KB / 2000 行）。`read` 保留**开头**并提示续读位置；
-`bash` / `grep` / `find` / `ls` 保留**尾部或计数**——排错时最近的输出更有用。
-
-**一处刻意偏离 Pi**：它的 `grep` / `find` 优先调用 `ripgrep` / `fd`，没有才回退。
-这里用纯 Python 实现——两套后端意味着两套行为与两套边界情况，而当前规模用不上
-ripgrep 的性能。真需要时替换 `grep.py` / `find.py` 内部即可，对外接口不变。
-
-### bash 的额外设计
-
-- **流式读取输出**，不等进程结束。这样命令超时被 kill 时，它此前打出的内容照样能拿回来
-- **内存有滚动上限**（1MB），命令可能吐几个 G，超出的从头部丢弃并计数
-- **清洗 ANSI 转义与控制字符**，避免污染上下文
-- **超时按进程树终止**（Windows 用 `taskkill /T`，POSIX 用进程组），只杀 shell 会把子进程留在后台
-- **不接 stdin**，交互式命令会一直等输入；让它直接失败好过挂住
-- **Windows 上优先用 Git Bash**（自动找 `C:\Program Files\Git\bin\bash.exe`），
-  因为模型的命令是照 bash 语义写的，落到 cmd.exe 会到处不认
-
-## 人工确认（Human-in-the-loop）
-
-`app/agent/tools/__init__.py` 里 `APPROVAL_REQUIRED` 集合内的工具，执行前**逐个**征求确认。
-**它目前是空的**——编码场景下每次执行命令都要点确认会很烦，所以默认不拦。
-把 `"bash"` 加进去即可启用。
+`app/agent/tools/__init__.py` 里 `APPROVAL_REQUIRED` 内的工具，执行前逐个征求确认。
+**它目前是空的**——编码场景下每条命令都点确认会很烦。把 `"bash"` 加进去即可启用。
 
 ```
 agent → tools（审批 + 执行） → agent
 ```
 
-agent 决定调用工具后，`tools` 节点对每个需审批的调用 `interrupt()`；前端收到 `interrupt`
-事件，用户选择后调 `/chat/resume`。通过的调用执行，被拒的写入回绝的 ToolMessage，
-agent 据此向用户解释。
+被拒的调用写入回绝的 ToolMessage，agent 据此向用户解释。
 
-几个要点：
+**会话卡住时的行为**：停在 `interrupt` 上时不允许直接发新消息。前端会把新消息
+暂存并在确认处理完后自动补发；打开卡住的会话会补渲染确认卡片，不会让你无处可点。
+被卡住的会话在侧边栏带红点。
 
-- **多调用时中断逐个出现**。每次 `resume` 解决一个，响应里会带出下一个 `interrupt`，
-  前端只需按同样方式再渲染一张确认卡片。
-- **同一节点的多个 interrupt 复用同一个 id**，前端不能用 id 去重。
-- **会话卡着时不允许直接发新消息**。两种情况会被 `ChatService` 挡下：停在 `interrupt` 上
-  （把待确认项重新推回前端），以及历史里有悬空的 `tool_calls`（返回 `error`，提示新建会话）。
+## 删除会话
 
-- **会话卡着时新消息会暂存，不会硬发，也不会丢**。前端一个 FIFO 就够，不需要消息队列——
-  真正的约束只有两条：同会话内有序、必须等 `interrupt` 全部消化完。那是状态机，不是投递问题。
-  暂存的消息在确认处理完（服务端 `pending` 转 false）后由前端自动补发。
-  服务端也做了兜底：绕过前端直接对卡住的会话发消息，会把待确认项重新推回去
-  （而不是回一句"请先调用 /chat/resume"——用户面对的是界面，没法自己构造请求）。
-- **打开卡住的会话会补渲染确认卡片**。`GET /chat/history` 的响应里带 `pending` 字段，
-  否则侧边栏虽有红点，用户进去只见历史、无处可点。
+侧边栏每行的垃圾桶按钮，或 `DELETE /chat/threads/{id}`。**硬删，没有归档态**。
 
-  这条规则不能省。若在中断状态下硬发新消息，LangGraph 会**丢弃 interrupt** 并把新消息
-  追加进去，于是那条没有 `ToolMessage` 回应的 `tool_calls` 永久留在历史里，之后每次调用
-  模型都会被 provider 以 400 拒绝：
+一次删除动四处，**服务端前两步的顺序不能反**：
 
-  > An assistant message with 'tool_calls' must be followed by tool messages
-  > responding to each 'tool_call_id'.
+| 顺序 | 对象 | 不这么做会怎样 |
+| --- | --- | --- |
+| 1 | checkpointer 的 `checkpoints` + `writes` | — |
+| 2 | `thread_index` 里的行 | 反过来的话，中途失败会留下「索引没了但检查点还在」的会话，下次索引重建又把它枚举回来 |
+| 3 | `thread_workspace` 里的绑定行 | 离开索引行就不可见，所以放最后删；中途失败也只剩一条谁都不会读的孤立记录 |
+| 4 | 前端暂存的新消息 | 删的正好是当前打开的会话时，不清掉暂存会在下一轮对话里被补发出去 |
 
-  `GET /chat/threads` 的 `pending` 标记用的正是这个判断（`is_interrupted` 或
-  `has_dangling_tool_calls`），所以被卡住的会话在侧边栏会带红点。
+**沙箱授权不删。** 授权按工作区归属，同一个工作区的其他对话还在用它——
+跟着会话一起删授权，会把别的对话连坐。开源的 OpenHands 删除接口是同一套判断：
+只有当没有其他会话共享同一个沙箱时才回收沙箱资源。
 
-工具执行**没有**使用 LangGraph 的 `ToolNode`：它会执行 `AIMessage` 里的全部调用
-（包括已被回绝的），并产生重复 `tool_call_id` 的 ToolMessage，审批拒绝会形同虚设。
-执行统一放在 `app/agent/langgraph_runner.py` 的 `_run_tools`，单一执行路径。
+> 另一个容易踩的坑是「两个生命周期」。Claude Code 的 `claude rm` 只删掉正在跑的
+> 会话，转写文件仍可 resume；`/clear` 更是完全不算删除。所以「删除」必须先定义
+> 清楚删的是哪一个概念——这里删的是会话本身，不留后路。
 
 ## 调试页面
 
-`app/static/index.html`，布局参考 Open WebUI：左侧会话列表、助手消息带头像无气泡、
-用户消息右侧气泡、底部圆角输入框。功能上支持流式渲染、markdown、工具卡片折叠、
-人工确认卡片、会话切换与历史恢复、浅色/深色主题切换、以及一个核对协议用的原始事件抽屉。
+`app/static/index.html`，布局参考 Open WebUI：左侧会话列表**先按工作区、再按今天/昨天/更早**
+两层分组（组头可折叠，悬停露出「在此工作区新建」）、助手消息带头像无气泡、
+用户消息右侧气泡（24px 圆角，与 Open WebUI 的 `rounded-3xl` 一致）、
+底部圆角输入框。支持流式渲染、markdown、工具卡片折叠、人工确认卡片、工作区切换
+（选目录即开一条绑定该目录的新对话，不搬动既有会话）、
+会话切换与历史恢复、删除会话、浅色/深色主题切换，以及一个核对协议用的原始事件抽屉。
+
+消息悬停时浮出操作行（复制 + 用量），最后一条常显；图标用 Heroicons，与 Open WebUI 同源。
+破坏性操作走自绘弹窗而非原生 `confirm`——原生弹窗样式不受控，桌面端的 WebView 里还可能被拦。
 
 主题令牌集中在 CSS 顶部的 `:root[data-theme=...]`，换皮只改那一层。
 
-> **浏览器端与桌面端是同一个文件**。`app/main.py` 把 `app/static` 挂在 `/ui`，
+> 浏览器端与桌面端是**同一个文件**。`app/main.py` 把 `app/static` 挂在 `/ui`，
 > `app/desktop.py` 的窗口也加载同一个地址，改一处两边同时生效。
-
-**markdown 渲染**用 vendor 在 `app/static/vendor/marked.umd.js` 的 marked（MIT，v18），
-**不走 CDN**：桌面端要能离线跑，内网也可能访问不到 CDN。引入时用相对路径
-`./vendor/marked.umd.js`——静态目录挂在 `/ui` 下，写死绝对路径会 404。
-
-marked 只解析、不管安全，因此输出会再过一遍白名单清洗（`sanitizeHtml`）：
-不在白名单的标签脱壳成纯文本（`script`/`style`/`iframe` 因此失效），
-属性只留 `href`/`src`/`alt`/`title`/`class`，`javascript:` 之类的 URL 一律剥掉。
-模型输出可能被提示注入影响，直接 `innerHTML` 等于把 XSS 交给它。
 
 ## 桌面模式
 
-把同一套前后端装进原生窗口，用于打包成桌面应用：
-
-```bash
-pip install -r requirements-desktop.txt
-```
-
-在项目根目录执行（两种写法等价）：
-
 ```bash
 python run_desktop.py
-python -m app.desktop
 ```
 
 **必须从项目根目录启动**，否则会报 `ModuleNotFoundError: No module named 'app'`。
-根目录的 `run_desktop.py` 就是为此存在的：直接运行脚本时 Python 只把**脚本所在目录**
-放进 `sys.path`，所以 `python app/desktop.py` 一定会失败。
+根目录的 `run_desktop.py` 就是为此存在的。
 
-`app/desktop.py` 会在后台线程启动 uvicorn（**端口由系统分配**，不会和已在跑的 8000 冲突），
-用 `/chat/history` 探活——该请求会走到 runner，成功即代表 lifespan 里的 `init_runner`
-已完成——然后打开窗口。窗口关闭时后端一并退出。
-
-**关键约束**：`/chat/stream` 的流式渲染依赖 Chromium 的 `fetch` + `ReadableStream`。
-已验证 EdgeWebView2（Chromium 152）下逐帧到达；首个 `thread` 帧在 8ms 内到达、
-后续 token 在 LLM 首 token 产出后陆续到达，说明宿主没有缓冲响应。因此
-`app/desktop.py` 在 Windows 上**固定使用 `edgechromium` 后端**，不交给 pywebview
-自动挑选，避免落到非 Chromium 内核。
-
-打包成单个 exe 需要 PyInstaller，尚未配置。
+窗口端口由系统分配，不会和已在跑的 8000 冲突；窗口关闭时后端一并退出。
 
 ## 命令行验证
 
@@ -321,18 +231,48 @@ curl -N -sS -X POST http://127.0.0.1:8000/chat/stream \
 
 其中 `payload.json` 内容为 `{"message":"你好"}`。
 
-> Windows 注意：若 PATH 中 `curl` 指向 `C:\msys64\usr\bin\curl.exe`（MSYS2 版本），
-> 它处理 `@文件名` 的方式与原生版不同，会把 JSON 内容按空格拆成多个参数并报
-> `unmatched close brace/bracket in URL`。请改用 `C:\Windows\System32\curl.exe`。
-> PowerShell 5.1 还会吞掉内联 JSON 的双引号，因此一律用 `--data-binary @文件` 而非 `--data-raw`。
+> **Windows**：若 PATH 中 `curl` 指向 MSYS2 版本，`@文件名` 会被错误处理；
+> 请用 `C:\Windows\System32\curl.exe`。PowerShell 5.1 会吞掉内联 JSON 的引号，
+> 所以用 `--data-binary @文件` 而不是 `--data-raw`。
+
+## 分层
+
+经典三层，依赖方向单向向下：
+
+```
+app/api/          表现层      HTTP、请求体校验、SSE 外壳
+     ↓
+app/service/      业务层      编排 Agent 执行、维护会话索引与工作区
+     ↓
+app/dao/          数据访问层  只读写自有表：thread_index / workspace / thread_workspace
+app/agent/        Agent 运行时 图定义、事件映射、沙箱、工具
+     ↓
+app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换用
+```
+
+- `app/container.py` 是**组装根**：选哪个实现、连接何时开关，都属于应用装配
+- `app/event/` 是**协议模型**（wire format）：前端能看见的一切形状。判据只有一条——
+  **要不要跨 HTTP 边界**：要 → 这里是 pydantic，供 OpenAPI；只在层间流转 → 放 `app/models/`，
+  dataclass 不带校验。agent 层直接产出数据面事件，业务层把实体映射成列表项与回执，
+  表现层只负责包 `Result`；**dao 不 import 它**（存储层不该知道协议）。
+  请求体是入站的 HTTP 校验，留在 api 层，不进 `app/event/`
+- `app/exceptions/` 放自定义异常（`SandboxDenied`、`InvalidInput`）
+- checkpointer **不单独抽 DAO**：那是 LangGraph 自己的存储，不是我们写的 SQL
+
+**`app/` 下每个关注点都是一级包**，不放散落的同名模块——`app/config/`、`app/result/`、
+`app/constant/` 都一样，这样 `from app.config import X` 是唯一入口，不出现
+`app.exceptions.exceptions` 这种双重叠词。包内的代码直接写在 `__init__.py` 里。
+
+> `app/config/__init__.py` 的 `PROJECT_ROOT` 是**按目录层级数出来的**，挪文件必须同步改。
+> 它算错不会报错，只会让相对路径的配置静默写到别处去，所以那里有启动断言兜底。
 
 ## 扩展点
 
 | 要改什么 | 改哪里 |
 | --- | --- |
-| 加工具 | `app/agent/tools/` 下新建一个文件，在 `__init__.py` 的 `TOOLS` 里注册 |
-| 加需审批的工具 | 把工具名加进同文件的 `APPROVAL_REQUIRED`，例如 `{"bash"}` |
-| 换存储 | `app/agent/__init__.py` 里换 checkpointer（`AsyncSqliteSaver` / `AsyncPostgresSaver` / 自定义） |
-| 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在 `app/agent/__init__.py` 的工厂里替换 |
+| 加工具 | `app/agent/tools/` 下新建文件，在 `__init__.py` 的 `TOOLS` 里注册 |
+| 加需审批的工具 | 把工具名加进同文件的 `APPROVAL_REQUIRED` |
+| 换存储 | `app/container.py` 里换 checkpointer |
+| 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在容器里替换 |
 | 换事件类型 | `app/event/events.py`，前端同步加一个 `case` |
 | 换前端 | `app/static/index.html` 可整体替换，事件处理逻辑可直接移植到 Next.js |

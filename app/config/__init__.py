@@ -1,11 +1,24 @@
-"""环境配置。换模型服务只改 .env，不动代码。"""
+"""
+环境配置。换模型服务只改 .env，不动代码。
+
+代码直接放在包的 `__init__.py` 里，和 `app/exceptions/` 一致：对外只有一个
+`from app.config import X` 的入口，不再套一层 `config/config.py` 的同名模块。
+
+**`PROJECT_ROOT` 是按目录层级数出来的，挪文件必须同步改。**
+这个文件在 `app/config/` 下，所以是往上第三层。算错不会报错，只会让相对路径的
+配置静默写到别处去——曾经因此凭空多出一个 `app/data/checkpoints.db`，
+用户那边表现为"会话丢了"。下面的断言让这类错误在启动时立刻暴露。
+"""
 
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+if not (PROJECT_ROOT / "requirements.txt").is_file():
+    raise RuntimeError(f"PROJECT_ROOT 算错了，指向 {PROJECT_ROOT}")
 
 # 显式指定 .env 位置，不用 load_dotenv() 的上溯查找：
 # 上溯是按调用方文件位置找的，行为和路径解析不一致，容易踩坑。

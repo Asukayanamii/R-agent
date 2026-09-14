@@ -16,8 +16,11 @@ from pydantic import BaseModel
 from app.agent.runner import AgentRunner
 from app.config import PROJECT_ROOT
 from app.dao.thread_index_dao import ThreadIndexDao
+from app.dao.workspace_dao import WorkspaceDao
 from app.exceptions import InvalidInput
 from app.event.events import (
+    BrowseEntry,
+    BrowseResponse,
     ErrorData,
     ErrorEvent,
     HistoryMessage,
@@ -27,13 +30,16 @@ from app.event.events import (
     MessageEndEvent,
     ThreadSummary,
 )
-from app.models.entities import ThreadRecord
+from app.models.entities import ThreadRecord, WorkspaceRecord
 
 
 class ChatService:
-    def __init__(self, runner: AgentRunner, index: ThreadIndexDao) -> None:
+    def __init__(
+        self, runner: AgentRunner, index: ThreadIndexDao, workspaces: WorkspaceDao
+    ) -> None:
         self._runner = runner
         self._index = index
+        self._workspaces = workspaces
 
     async def _stuck_reason(self, thread_id: str) -> str | None:
         """会话是否卡着（用于索引里的 pending 标记）。"""
@@ -84,10 +90,10 @@ class ChatService:
         await self._record(thread_id, title="")
 
     async def _workspace(self, thread_id: str) -> str | None:
-        """该会话的工作区。没设过则返回 None，由沙箱退回应用所在目录。"""
-        return await self._index.get_workspace(thread_id) or None
+        """该会话的工作区。没绑过则返回 None，由沙箱退回应用所在目录。"""
+        return await self._workspaces.for_thread(thread_id) or None
 
-    def browse(self, path: str) -> dict:
+    def browse(self, path: str) -> BrowseResponse:
         """
         列出目录，供前端挑选工作区。
 
@@ -98,7 +104,7 @@ class ChatService:
         但要是把 API 暴露出去，这个接口必须先加鉴权或去掉。
         """
         if not path.strip():
-            return {"path": "", "parent": None, "dirs": self._start_points()}
+            return BrowseResponse(path="", parent=None, dirs=self._start_points())
 
         target = Path(path.strip()).expanduser()
         try:
@@ -114,38 +120,39 @@ class ChatService:
             for item in sorted(target.iterdir(), key=lambda p: p.name.lower()):
                 try:
                     if item.is_dir():
-                        entries.append({"name": item.name, "path": item.as_posix()})
+                        entries.append(BrowseEntry(name=item.name, path=item.as_posix()))
                 except OSError:
                     continue
         except PermissionError as exc:
             raise InvalidInput(f"没有权限读取：{target.as_posix()}") from exc
 
         parent = target.parent
-        return {
-            "path": target.as_posix(),
-            "parent": None if parent == target else parent.as_posix(),
-            "dirs": entries,
-        }
+        return BrowseResponse(
+            path=target.as_posix(),
+            parent=None if parent == target else parent.as_posix(),
+            dirs=entries,
+        )
 
     @staticmethod
-    def _start_points() -> list[dict]:
+    def _start_points() -> list[BrowseEntry]:
         """没给路径时给出的起点：用户目录 + 各盘符（Windows）。"""
-        points = [{"name": f"~ {Path.home().name}", "path": Path.home().as_posix()}]
+        points = [BrowseEntry(name=f"~ {Path.home().name}", path=Path.home().as_posix())]
         if sys.platform == "win32":
             for letter in "CDEFGH":
                 drive = Path(f"{letter}:/")
                 if drive.exists():
-                    points.append({"name": drive.as_posix(), "path": drive.as_posix()})
+                    points.append(BrowseEntry(name=drive.as_posix(), path=drive.as_posix()))
         else:
-            points.append({"name": "/", "path": "/"})
+            points.append(BrowseEntry(name="/", path="/"))
         return points
 
     async def set_workspace(self, thread_id: str, path: str) -> str:
         """
-        设置会话的工作区。
+        把会话绑定到工作区——这是会话与工作区建立关系的唯一入口。
 
         工作区就是沙箱的信任边界，**只能由用户指定**——agent 若能改自己的边界，
-        边界就不存在了。所以这个方法只应该被用户触发的接口调用。
+        边界就不存在了。所以这个方法只应该被用户触发的接口调用，且只作用于刚诞生的会话：
+        既有会话的归属不允许被别的动作顺手改掉（界面上选目录 = 开一条新对话，不是搬走手上这条）。
         """
         target = Path(path.strip() or ".").expanduser()
         if not target.is_absolute():
@@ -157,8 +164,9 @@ class ChatService:
         if not target.is_dir():
             raise InvalidInput(f"不是目录：{target.as_posix()}")
 
-        await self._index.set_workspace(thread_id, target.as_posix())
-        return target.as_posix()
+        return await self._workspaces.bind(
+            thread_id, target.as_posix(), datetime.now(timezone.utc).isoformat()
+        )
 
     async def _record(self, thread_id: str, title: str) -> None:
         """
@@ -190,23 +198,114 @@ class ChatService:
         return await self._runner.pending_interrupts(thread_id)
 
     async def threads(self, limit: int = 50) -> list[ThreadSummary]:
-        records = await self._index.list(limit)
-        return [
-            ThreadSummary(
-                thread_id=record.thread_id,
-                title=record.title or record.thread_id[:12],
-                updated_at=record.updated_at,
-                pending=record.pending,
-                workspace=record.workspace,
+        records = await self._index.list_threads(limit)
+        bound = await self._workspaces.paths_for(
+            [record.thread_id for record in records]
+        )
+        items = []
+        for record in records:
+            found = bound.get(record.thread_id)
+            items.append(
+                ThreadSummary(
+                    thread_id=record.thread_id,
+                    title=record.title or record.thread_id[:12],
+                    updated_at=record.updated_at,
+                    pending=record.pending,
+                    workspace=found.path if found else "",
+                    workspace_name=found.name if found else "",
+                )
             )
-            for record in records
-        ]
+        return items
+
+    async def delete_thread(self, thread_id: str) -> None:
+        """
+        删除一个会话。不存在的会话静默通过。
+
+        **顺序不能反**：先删 checkpoints，再删索引行。反过来的话，中间失败会留下
+        "索引没了但检查点还在"的会话，下次索引重建又把它枚举回来。
+
+        绑定行最后删：链接离开索引行不可见，中途失败也只会剩一条谁都不会读的孤立记录。
+        工作区行本身留着——同工作区的其他会话还在用它。
+
+        沙箱授权**不在这里清**——它按工作区归属，同工作区的其他会话还在用。
+        跟着会话删授权，会把别的对话一起连坐。
+        """
+        await self._runner.delete_thread(thread_id)
+        await self._index.delete(thread_id)
+        await self._workspaces.unbind(thread_id)
 
     async def ensure_index(self) -> int:
-        """索引为空而存储里有会话时回填一次，用于首次启用索引或索引被删。"""
+        """
+        索引为空而存储里有会话时回填一次，用于首次启用索引或索引被删。
+
+        工作区归属在 thread_workspace 那张表里，不参与这个回填，所以重建会话列表不丢归类。
+        """
         if await self._index.count() > 0:
             return 0
         records = await self._runner.scan_threads()
         for record in records:
             await self._index.upsert(record)
         return len(records)
+
+    async def adopt_workspaces(self) -> tuple[int, bool]:
+        """
+        把历史工作区字符串收进工作区表，然后删掉那个已迁出的列（启动时跑一次，幂等）。
+
+        老库里同一目录可能因为大小写写法不同留下多条字符串，经归一化后合并成同一行。
+        **顺序不能反**：先迁后删，直接删列会把还没读出来的归属一起带走。
+        返回 (迁入的会话数, 是否删掉了历史列)。
+        """
+        legacy = await self._index.rows_with_legacy_workspace()
+        now = datetime.now(timezone.utc).isoformat()
+        for thread_id, path in legacy:
+            await self._workspaces.bind_if_absent(thread_id, path, now)
+        dropped = await self._index.drop_legacy_workspace()
+        return len(legacy), dropped
+
+    async def default_workspace(self) -> WorkspaceRecord:
+        """
+        没选过工作区时新会话落在哪：应用所在目录。
+
+        它和用户自己挑的工作区**一视同仁**——同一个实体、同一种分组、同一条绑定路径。
+        沙箱在没有绑定时的兜底值也是这里，所以显式绑上它不改变任何权限行为。
+        """
+        path = PROJECT_ROOT.as_posix()
+        found = await self._workspaces.for_path(path)
+        if found is not None:
+            return found
+        return await self._workspaces.ensure(
+            path, datetime.now(timezone.utc).isoformat()
+        )
+
+    async def adopt_default_workspace(self) -> int:
+        """
+        把还没有归属的会话统一绑到默认工作区（应用所在目录），启动时跑一次。
+
+        归属是"每个会话都有且只有一个"，这样 UI 侧不必再为"没设工作区"单开一个分组。
+        索引重建出来的会话也走这条路；已经绑过的绝不动（bind_many 是 INSERT OR IGNORE）。
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        default = await self._workspaces.ensure(PROJECT_ROOT.as_posix(), now)
+        ids = await self._index.thread_ids()
+        bound = await self._workspaces.paths_for(ids)
+        missing = [thread_id for thread_id in ids if thread_id not in bound]
+        await self._workspaces.bind_many(missing, default.path, now)
+        return len(missing)
+
+    async def purge_placeholders(self) -> int:
+        """
+        清理"只设过工作区、从没说过话"的空索引行。
+
+        旧版 set_workspace 会提前物化这种行，在侧边栏表现为一条十六进制标题的空会话。
+        存储里仍有状态的会话一律保留——宁可留着空行，也不能删掉有用的索引。
+        """
+        ghosts = await self._index.placeholder_ids()
+        if not ghosts:
+            return 0
+        alive = {record.thread_id for record in await self._runner.scan_threads()}
+        victims = [thread_id for thread_id in ghosts if thread_id not in alive]
+        if not victims:
+            return 0
+        # 绑定是迁到工作区表之后才写上的，索引行删掉后它就成了谁都不会读的孤立记录
+        await self._workspaces.unbind_many(victims)
+        return await self._index.delete_many(victims)

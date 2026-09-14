@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.agent.runner import AgentRunner, StubRunner
 from app.dao.thread_index_dao import ThreadIndexDao
+from app.dao.workspace_dao import WorkspaceDao
 from app.service.chat_service import ChatService
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,12 @@ async def _build_runner() -> AgentRunner:
 
 
 async def startup() -> None:
-    """构建数据访问层与业务层。索引为空而库里有会话时会自动回填一次。"""
+    """
+    构建数据访问层与业务层。
+
+    顺序有意义：先把历史工作区迁进工作区表（要读 thread_index 上的旧列），
+    再回填索引，最后清理旧版留下的空会话行。
+    """
     global _service
     if _service is not None:
         return
@@ -60,10 +66,29 @@ async def startup() -> None:
     await index.open()
     _exit_stack.push_async_callback(index.close)
 
-    service = ChatService(runner, index)
+    workspaces = WorkspaceDao(SQLITE_PATH)
+    await workspaces.open()
+    _exit_stack.push_async_callback(workspaces.close)
+
+    service = ChatService(runner, index, workspaces)
+
+    adopted, dropped = await service.adopt_workspaces()
+    if adopted:
+        logger.info("已把 %d 个会话的工作区迁入工作区表", adopted)
+    if dropped:
+        logger.info("已删掉 thread_index 上的历史工作区列")
+
     filled = await service.ensure_index()
     if filled:
         logger.info("已回填 %d 个会话到索引", filled)
+
+    purged = await service.purge_placeholders()
+    if purged:
+        logger.info("已清理 %d 条只设过工作区、没有对话的空索引", purged)
+
+    rebound = await service.adopt_default_workspace()
+    if rebound:
+        logger.info("已把 %d 个没有归属的会话绑到应用所在目录", rebound)
 
     _service = service
 

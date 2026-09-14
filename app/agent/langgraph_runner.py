@@ -218,7 +218,7 @@ class LangGraphRunner:
 
     async def history(self, thread_id: str) -> list[HistoryMessage]:
         snapshot = await self.graph.aget_state(self._config(thread_id))
-        result = []
+        result: list[HistoryMessage] = []
         for message in snapshot.values.get("messages", []):
             if isinstance(message, HumanMessage):
                 role = "user"
@@ -235,6 +235,15 @@ class LangGraphRunner:
                 )
             )
         return result
+
+    async def delete_thread(self, thread_id: str) -> None:
+        """
+        删掉该会话的检查点。
+
+        用 checkpointer 自带的 `adelete_thread`，它会同时清 `checkpoints` 与 `writes`
+        两张表（实测确认）。自己写 SQL 很容易漏掉 writes。
+        """
+        await self.checkpointer.adelete_thread(thread_id)
 
     @staticmethod
     def _title_of(snapshot: object) -> str:
