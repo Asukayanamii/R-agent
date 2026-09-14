@@ -1,8 +1,12 @@
 """
-流式事件协议。
+协议层：前端能看到的一切形状。
 
-前端只依赖本文件定义的 type / data 两个字段，不感知 LangGraph 的节点、
-metadata、run_id 等内部结构。后端重构 graph 时前端无需改动。
+流式部分是 type / data 两个字段的事件：前端不感知 LangGraph 的节点、metadata、run_id
+等内部结构，后端重构 graph 时前端无需改动。非流式部分是各接口的回执，服务层把领域实体
+映射成它们，表现层只负责包一层 `Result`。
+
+请求体（`ChatRequest` / `ResumeRequest` / `WorkspaceRequest`）留在 api 层——那是入站的
+HTTP 校验，前端拿不到它，服务层也不该知道。
 """
 
 from enum import Enum
@@ -75,12 +79,45 @@ class DoneData(BaseModel):
     """流结束标记，永远是本次流的最后一个事件。"""
 
 
+# ---- 以下是非流式接口的形状：服务层直接产出，表现层只负责包 Result ----
+# 请求体不在这一层：它是入站的 HTTP 校验，见 app/api/chat.py。
+
+
+class HistoryToolCall(BaseModel):
+    """
+    历史里的一次工具调用。
+
+    调用与结果分开存（`AIMessage.tool_calls` 与按 `tool_call_id` 配对的 `ToolMessage`），
+    所以可能只有调用没有结果——停在待确认上、或者那一轮被中断了，这时 `state` 是 pending。
+    """
+
+    id: str = Field(..., description="调用 ID，与实时事件里的 tool_start 一致")
+    name: str = Field(..., description="工具名")
+    args: dict = Field(default_factory=dict, description="调用参数")
+    state: Literal["ok", "failed", "pending"] = Field(
+        "ok", description="完成 / 失败 / 未完成（可能停在待确认上）"
+    )
+    result: str | None = Field(None, description="成功时的返回值")
+    error: str | None = Field(None, description="失败或未完成的原因")
+
+
 class HistoryMessage(BaseModel):
     """历史消息，用于前端恢复既有会话。"""
 
     role: str = Field(..., description="user 或 assistant")
     content: str
     id: str | None = None
+    tool_calls: list[HistoryToolCall] = Field(
+        default_factory=list,
+        description="assistant 消息在这轮里调过的工具，按发生顺序；渲染在正文上方",
+    )
+
+
+class WorkspaceInfo(BaseModel):
+    """工作区的协议形态。默认工作区（应用所在目录）也是这个样子，没有特殊形态。"""
+
+    path: str = Field(..., description="规范路径")
+    name: str = Field("", description="展示名，默认取目录名")
 
 
 class ThreadSummary(BaseModel):
@@ -90,6 +127,56 @@ class ThreadSummary(BaseModel):
     title: str = Field(..., description="取首条用户消息，为空时退化为 thread_id 前缀")
     updated_at: str = Field("", description="最近一次检查点时间戳")
     pending: bool = Field(False, description="是否有待人工确认的操作")
+    workspace: str = Field("", description="该会话绑定的工作区路径；为空表示用应用所在目录")
+    workspace_name: str = Field(
+        "", description="工作区展示名（默认目录名），供侧边栏分组标题用"
+    )
+
+
+class WorkspaceResponse(BaseModel):
+    """绑定工作区的回执。"""
+
+    thread_id: str
+    workspace: str = Field(..., description="绑定后的规范路径")
+
+
+class BrowseEntry(BaseModel):
+    """目录浏览里的一行。"""
+
+    name: str
+    path: str
+
+
+class BrowseResponse(BaseModel):
+    """目录浏览的结果。path 为空表示还没进入任何目录，dirs 只给起点。"""
+
+    path: str
+    parent: str | None = Field(..., description="上一级目录；已经是根时为 None")
+    dirs: list[BrowseEntry]
+
+
+class HistoryResponse(BaseModel):
+    """打开旧会话时要恢复的东西：消息 + 还挂着的待确认项。"""
+
+    thread_id: str
+    messages: list[HistoryMessage]
+    pending: list[InterruptData] = Field(
+        default_factory=list,
+        description="待确认项。前端据此在历史末尾补渲染确认卡片，否则卡住的会话进去无处可点",
+    )
+
+
+class ThreadListResponse(BaseModel):
+    """会话列表。顺带给出默认工作区，前端不必再为"没设过"单开一个分组。"""
+
+    threads: list[ThreadSummary]
+    default_workspace: WorkspaceInfo = Field(
+        ...,
+        description=(
+            "没选过工作区时新会话落在哪。就是应用所在目录，"
+            "它和用户自己挑的工作区一视同仁"
+        ),
+    )
 
 
 class ThreadEvent(BaseModel):

@@ -7,3 +7,4 @@ aiosqlite==0.22.1
 langchain-openai==1.6.2
 langchain-core==1.6.3
 python-dotenv==1.2.3
+tzdata==2026.4

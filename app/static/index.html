@@ -28,7 +28,10 @@
     --danger: #b91c1c;
     --danger-bg: #fef2f2;
     --danger-border: #fecaca;
+    --danger-solid: #dc2626;
+    --danger-solid-fg: #ffffff;
     --ok: #15803d;
+    --link: #1d4ed8;
   }
   :root[data-theme="dark"] {
     --bg: #1a1a1a;
@@ -50,7 +53,10 @@
     --danger: #f87171;
     --danger-bg: #2a1414;
     --danger-border: #52201f;
+    --danger-solid: #dc2626;
+    --danger-solid-fg: #ffffff;
     --ok: #4ade80;
+    --link: #7aa2f7;
   }
 
   :root {
@@ -110,6 +116,50 @@
     color: var(--text-faint);
   }
 
+  /* 会话列表第一层：按工作区目录分组，行样式照 Open WebUI 的文件夹行 */
+  .ws-group + .ws-group { margin-top: 6px; }
+
+  .ws-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px;
+    border-radius: 12px;
+    color: var(--text-dim);
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .ws-head:hover { background: var(--bg-hover); color: var(--text); }
+  .ws-head .chev { display: flex; flex-shrink: 0; }
+  .ws-head .chev svg { width: 12px; height: 12px; }
+  .ws-head .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-head .count { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  /* 工作区目录没了，加号换成一个说明，点下去也只会失败 */
+  .ws-head.stale .name { text-decoration: line-through; text-decoration-color: var(--text-faint); }
+  .ws-head .warn { color: var(--danger); font-size: 11px; flex-shrink: 0; }
+  /* 和 Open WebUI 一样，新建按钮平时藏着，悬停才露出来 */
+  .ws-head .add {
+    display: none;
+    width: 18px; height: 18px; flex-shrink: 0;
+    align-items: center; justify-content: center;
+    padding: 0; border: 0; background: none;
+    color: inherit; font: inherit;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .ws-head .add svg { width: 12px; height: 12px; }
+  .ws-head:hover .add { display: flex; }
+  .ws-head .add:hover { background: var(--bg-raise); color: var(--text); }
+
+  /* 第二层：时间分组，缩进在工作区标题之下 */
+  .day-label {
+    padding: 9px 11px 4px 20px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-faint);
+    user-select: none;
+  }
+  .day-label:first-child { padding-top: 4px; }
+
   #threads { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
   #threads::-webkit-scrollbar { width: 8px; }
   #threads::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
@@ -128,6 +178,15 @@
   .thread.active { background: var(--bg-hover); color: var(--text); font-weight: 500; }
   .thread .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .thread .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
+  /* 侧边栏里的操作按钮比消息行里的更小，且只在悬停时出现 */
+  .thread .act {
+    width: 22px; height: 22px;
+    display: none;
+    border-radius: 7px;
+  }
+  .thread .act svg { width: 13px; height: 13px; }
+  .thread:hover .act, .thread.active .act { display: flex; }
+  .thread .act:hover { background: var(--danger-bg); color: var(--danger); }
 
   .side-bottom {
     border-top: 1px solid var(--border);
@@ -185,11 +244,47 @@
   }
 
   .body { min-width: 0; flex: 1; }
-  .turn.user .body { flex: 0 1 auto; max-width: 76%; }
+  /* 用户气泡占宽照 Open WebUI：max-w-[90%] */
+  .turn.user .body { flex: 0 1 auto; max-width: 90%; }
 
+  /* ============ markdown 渲染结果 ============ */
   .md { word-break: break-word; }
+  .md > *:first-child { margin-top: 0; }
+  .md > *:last-child { margin-bottom: 0; }
   .md p { margin: 0 0 10px; }
   .md strong { font-weight: 600; }
+  .md em { font-style: italic; }
+  .md del { color: var(--text-faint); }
+
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+    margin: 18px 0 9px; font-weight: 600; line-height: 1.35;
+  }
+  .md h1 { font-size: 1.34em; }
+  .md h2 { font-size: 1.2em; }
+  .md h3 { font-size: 1.07em; }
+  .md h4, .md h5, .md h6 { font-size: 1em; color: var(--text-dim); }
+
+  .md ul, .md ol { margin: 0 0 10px; padding-left: 1.5em; }
+  .md li { margin: 3px 0; }
+  .md li > p { margin: 0; }
+  .md li > ul, .md li > ol { margin: 3px 0 0; }
+
+  .md blockquote {
+    margin: 10px 0; padding: 2px 0 2px 13px;
+    border-left: 3px solid var(--border);
+    color: var(--text-dim);
+  }
+  .md hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+  .md a {
+    color: var(--link);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1px;
+  }
+  .md a:hover { text-decoration-thickness: 2px; }
+  .md img { max-width: 100%; border-radius: 8px; }
+
   .md pre {
     background: var(--bg-code);
     border: 1px solid var(--border);
@@ -201,7 +296,7 @@
     font-size: 12.5px;
     line-height: 1.6;
   }
-  .md code.inline {
+  .md code {
     background: var(--bg-code);
     border: 1px solid var(--border);
     border-radius: 5px;
@@ -209,32 +304,93 @@
     font-family: var(--mono);
     font-size: 12.5px;
   }
+  .md pre code { background: none; border: none; padding: 0; font-size: inherit; }
 
+  .md table {
+    border-collapse: collapse;
+    margin: 10px 0;
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+    font-size: 13.5px;
+  }
+  .md th, .md td { border: 1px solid var(--border); padding: 6px 11px; text-align: left; }
+  .md th { background: var(--bg-code); font-weight: 600; }
+
+  /* 用户气泡照 Open WebUI：rounded-3xl + px-4，且只有用户侧有气泡 */
   .user-bubble {
     background: var(--bubble);
-    border-radius: 18px;
-    padding: 10px 16px;
+    border-radius: 24px;
+    padding: 9px 16px;
     white-space: pre-wrap;
     word-break: break-word;
   }
 
-  .caret {
-    display: inline-block;
-    width: 7px; height: 15px;
-    background: var(--text);
-    vertical-align: -2px;
-    margin-left: 2px;
-    animation: blink 1.05s steps(2) infinite;
+  /* ============ 消息操作行（照 Open WebUI 的 hover-reveal 行为） ============ */
+  .actions {
+    display: flex; align-items: center; gap: 2px;
+    margin-top: 3px;
+    color: var(--text-faint);
+    /* 非最后一条默认隐藏，悬停才出现；最后一条常显 */
+    opacity: 0;
+    transition: opacity .12s;
   }
-  @keyframes blink { 50% { opacity: 0; } }
+  .turn:hover .actions { opacity: 1; }
+  .turn:last-child .actions { opacity: 1; }
+  .turn.user .actions { justify-content: flex-end; }
+  .turn.user .actions .atime { order: -1; }
 
-  .meta {
-    display: flex; gap: 12px;
-    margin-top: 8px;
-    font-family: var(--mono);
+  .act {
+    display: flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; flex-shrink: 0;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: inherit;
+    cursor: pointer;
+    transition: background .12s, color .12s;
+  }
+  .act:hover { background: var(--bg-hover); color: var(--text); }
+  .act svg { width: 15px; height: 15px; }
+  .act.done { color: var(--ok); }
+
+  .atime {
+    flex-shrink: 0;
+    padding: 0 5px;
     font-size: 11px;
     color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+    white-space: nowrap;
   }
+  .anote {
+    flex-shrink: 0;
+    padding: 0 5px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-faint);
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  /* 中断标记：手动停止与意外断开共用同一句话 */
+  .note {
+    font-size: 12px;
+    color: var(--text-faint);
+    margin-top: 2px;
+  }
+
+  /* 流式光标照 Open WebUI：w-[0.125rem] h-3.5 的脉冲竖条 */
+  .caret {
+    display: inline-block;
+    width: 2px; height: 14px;
+    background: var(--text-dim);
+    vertical-align: -2px;
+    margin-left: 2px;
+    animation: pulse 2s cubic-bezier(.4, 0, .6, 1) infinite;
+  }
+  @keyframes pulse { 50% { opacity: .35; } }
 
   /* ============ 工具卡片 ============ */
   .tool {
@@ -363,8 +519,144 @@
   }
   #send:hover { opacity: .85; }
   #send:disabled { opacity: .3; cursor: not-allowed; }
+  /* 运行中显示成"停止"：方块比箭头小一号 */
+  #send.stop { font-size: 12px; }
 
   .hint { text-align: center; font-size: 11.5px; color: var(--text-faint); margin-top: 9px; }
+
+  /* 待发送暂存：会话卡在确认上时，新消息在这里排队 */
+  .outbox { max-width: 760px; margin: 0 auto 8px; display: flex; flex-direction: column; gap: 6px; }
+  .outbox .item {
+    display: flex; align-items: center; gap: 9px;
+    background: var(--bg-hover);
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    padding: 6px 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .outbox .item .tag {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--warn);
+    border: 1px solid var(--warn-border);
+    background: var(--warn-bg);
+    border-radius: 5px;
+    padding: 1px 6px;
+  }
+  .outbox .item .txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ============ 工作区选择器 ============ */
+  .ws-chip {
+    display: flex; align-items: center; gap: 6px;
+    max-width: 280px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 4px 9px;
+    cursor: pointer;
+  }
+  .ws-chip:hover { border-color: var(--border); background: var(--bg-hover); color: var(--text); }
+  .ws-chip.kicked { color: var(--warn); border-color: var(--warn-border); background: var(--warn-bg); }
+  .ws-chip .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #wsPanel {
+    position: fixed;
+    top: 58px; left: 50%; transform: translateX(-50%);
+    width: min(580px, calc(100vw - 40px));
+    max-height: 62vh;
+    display: none; flex-direction: column;
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 14px 44px rgba(0, 0, 0, .3);
+    z-index: 50;
+  }
+  #wsPanel.open { display: flex; }
+  .ws-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ws-head .path {
+    flex: 1;
+    font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ws-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .ws-list .row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 8px;
+    font-size: 13.5px; cursor: pointer;
+  }
+  .ws-list .row:hover { background: var(--bg-hover); }
+  .ws-list .row .icon { color: var(--text-faint); font-family: var(--mono); font-size: 12px; }
+  .ws-list .empty { padding: 18px; text-align: center; color: var(--text-faint); font-size: 13px; }
+  .ws-foot {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+    border-top: 1px solid var(--border);
+  }
+  .ws-foot .msg { flex: 1; font-size: 12.5px; color: var(--danger); }
+  .ws-foot button {
+    font-family: inherit; font-size: 13px;
+    padding: 7px 16px; border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-raise); color: var(--text);
+    cursor: pointer;
+  }
+  .ws-foot button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .ws-foot button:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* ============ 确认弹窗（照 Open WebUI 的 ConfirmDialog，不用原生 confirm） ============ */
+  .mask {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, .45);
+    z-index: 100;
+    animation: fadein .12s ease-out;
+  }
+  @keyframes fadein { from { opacity: 0; } }
+
+  .modal {
+    width: min(440px, calc(100vw - 40px));
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px 22px 18px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, .35);
+    animation: pop .14s ease-out;
+  }
+  @keyframes pop { from { transform: scale(.96); opacity: 0; } }
+
+  .modal .mtitle { font-size: 15.5px; font-weight: 600; margin-bottom: 9px; }
+  .modal .mbody {
+    font-size: 13.5px; line-height: 1.7; color: var(--text-dim);
+    margin-bottom: 18px;
+  }
+  .modal .mbody b { color: var(--text); font-weight: 600; }
+  .modal .mbody .sub { font-size: 12.5px; color: var(--text-faint); }
+  .modal .mrow { display: flex; justify-content: flex-end; gap: 9px; }
+  .modal button {
+    font-family: inherit; font-size: 13.5px;
+    padding: 8px 17px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-raise);
+    color: var(--text);
+    cursor: pointer;
+    transition: background .12s, opacity .12s;
+  }
+  .modal button:hover { background: var(--bg-hover); }
+  .modal button.solid {
+    background: var(--danger-solid);
+    border-color: var(--danger-solid);
+    color: var(--danger-solid-fg);
+  }
+  .modal button.solid:hover { background: var(--danger-solid); opacity: .88; }
 
   /* ============ 事件抽屉 ============ */
   #drawer {
@@ -406,6 +698,9 @@
   <div class="topbar">
     <button class="icon-btn" id="sideBtn">≡</button>
     <span class="name">my-agent</span>
+    <button class="ws-chip" id="wsBtn" title="切换工作区（沙箱的信任边界）">
+      <span class="icon">⌂</span><span class="label" id="wsLabel">工作区</span>
+    </button>
     <span class="spacer"></span>
     <button class="icon-btn" id="logBtn">事件</button>
   </div>
@@ -415,11 +710,24 @@
   </div>
 
   <div class="composer-wrap">
+    <div class="outbox" id="outbox"></div>
     <div class="composer">
       <textarea id="input" rows="1" placeholder="发送消息…"></textarea>
       <button id="send" title="发送">↑</button>
     </div>
     <div class="hint">Enter 发送 · Shift + Enter 换行</div>
+  </div>
+</div>
+
+<div id="wsPanel">
+  <div class="ws-head">
+    <span class="path" id="wsPath">选择一个起点</span>
+    <button class="icon-btn" id="wsClose">关闭</button>
+  </div>
+  <div class="ws-list" id="wsList"></div>
+  <div class="ws-foot">
+    <span class="msg" id="wsMsg"></span>
+    <button id="wsPick" class="primary">选用此目录</button>
   </div>
 </div>
 
@@ -430,6 +738,8 @@
   </div>
 </aside>
 
+<!-- 相对路径：静态目录挂在 /ui，写死绝对路径会在换挂载点时失效 -->
+<script src="./vendor/marked.umd.js"></script>
 <script>
 "use strict";
 
@@ -444,40 +754,107 @@ const handlers = {
   interrupt: (d, ctx) => ctx.interrupt(d),
   message_end: (d, ctx) => ctx.messageEnd(d),
   error: (d, ctx) => ctx.error(d),
+  done: (d, ctx) => { ctx.sawDone = true; },
 };
 
 /* ============================================================
-   极简 markdown：转义优先，代码块单独处理，不解析链接与 HTML
+   markdown 渲染
+
+   用 vendor 进来的 marked，不走 CDN——桌面端要能离线跑，
+   内网也可能访问不到 CDN。
+
+   marked 只管解析、不管安全，输出必须过一遍白名单清洗：模型输出可能
+   被提示注入影响，直接 innerHTML 等于把 XSS 交给它。
    ============================================================ */
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
 
-function renderMd(text) {
-  return String(text)
-    .split(/```/)
-    .map((part, i) => {
-      if (i % 2 === 1) {
-        const code = part.replace(/^[\w-]*\n/, "");
-        return `<pre><code>${escapeHtml(code)}</code></pre>`;
+const MD_TAGS = new Set([
+  "P", "BR", "STRONG", "EM", "DEL", "CODE", "PRE",
+  "H1", "H2", "H3", "H4", "H5", "H6",
+  "UL", "OL", "LI", "BLOCKQUOTE", "HR",
+  "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD",
+]);
+const MD_ATTRS = {
+  A: ["href", "title"],
+  IMG: ["src", "alt", "title"],
+  CODE: ["class"],
+  PRE: ["class"],
+};
+const MD_URL = /^(https?:|mailto:|#)/i;
+
+function sanitizeHtml(html) {
+  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
+  const root = doc.body.firstElementChild;
+
+  const walk = (node) => {
+    for (const child of Array.from(node.children)) {
+      walk(child);
+
+      if (!MD_TAGS.has(child.tagName)) {
+        // 脱壳保留文字：script / style 的内容会变成纯文本，不再可执行
+        child.replaceWith(...child.childNodes);
+        continue;
       }
-      return escapeHtml(part)
-        .replace(/`([^`\n]+)`/g, '<code class="inline">$1</code>')
-        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-        .replace(/\n/g, "<br>");
-    })
-    .join("");
+
+      const allowed = MD_ATTRS[child.tagName] || [];
+      for (const attr of Array.from(child.attributes)) {
+        if (!allowed.includes(attr.name.toLowerCase())) child.removeAttribute(attr.name);
+      }
+
+      if (child.tagName === "A") {
+        const href = child.getAttribute("href") || "";
+        if (!MD_URL.test(href)) child.removeAttribute("href");
+        else {
+          child.setAttribute("target", "_blank");
+          child.setAttribute("rel", "noopener noreferrer");
+        }
+      }
+      if (child.tagName === "IMG") {
+        const src = child.getAttribute("src") || "";
+        if (!/^https?:/i.test(src)) child.removeAttribute("src");
+      }
+    }
+  };
+
+  walk(root);
+  return root.innerHTML;
+}
+
+if (typeof marked !== "undefined") {
+  marked.setOptions({ gfm: true, breaks: true });
+}
+
+function renderMd(text) {
+  const raw = String(text);
+  if (typeof marked === "undefined") {
+    // vendor 资源没加载上时退化成纯文本，别让整块渲染塌掉
+    return escapeHtml(raw).replace(/\n/g, "<br>");
+  }
+  try {
+    return sanitizeHtml(marked.parse(raw));
+  } catch (err) {
+    console.warn("markdown 解析失败，退化为纯文本", err);
+    return escapeHtml(raw).replace(/\n/g, "<br>");
+  }
 }
 
 /* ============================================================
    接口
    ============================================================ */
+/* 单飞：同一时刻只有一轮在跑，"停止"就是 abort 它（signal 挂在 currentRun 上） */
 async function streamEvents(path, body, ctx) {
   const res = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: currentRun ? currentRun.signal : undefined,
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${await res.text().catch(() => "")}`);
+  if (!res.ok) {
+    const err = new Error(`HTTP ${res.status} ${await res.text().catch(() => "")}`);
+    err.fromHttp = true;   // 服务端明确拒绝：该显示错误框，而不是"已中断"
+    throw err;
+  }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -518,7 +895,10 @@ async function loadHistory(threadId) {
   const res = await fetch(`/chat/history?thread_id=${encodeURIComponent(threadId)}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const body = await res.json();
-  return body.data?.messages || [];
+  return {
+    messages: body.data?.messages || [],
+    pending: body.data?.pending || [],
+  };
 }
 
 /* ============================================================
@@ -533,7 +913,12 @@ const sendBtn = document.getElementById("send");
 
 let threadId = null;
 let busy = false;
+let currentRun = null;    // 当前这一轮的 AbortController：停止就是 abort 它
 let threads = [];
+let defaultWs = null;     // 服务端给的默认工作区（应用所在目录），和其他工作区一视同仁
+let pendingWs = "";       // 未落库新对话的工作区：发第一条消息时才绑到会话上
+let outbox = [];          // 待发送：会话卡在确认上时暂存，不丢弃也不硬发
+let outboxThread = null;  // 暂存属于哪个会话
 
 /* ============================================================
    侧边栏：会话列表由服务端提供，前端不自行维护清单。
@@ -546,9 +931,38 @@ async function loadThreads() {
     if (!res.ok) return;
     const body = await res.json();
     threads = body.data?.threads || [];
-  } catch {
+    defaultWs = body.data?.default_workspace || null;
+    // 还没有任何上下文时，新对话落在默认工作区（应用所在目录）
+    if (!threadId && !pendingWs && defaultWs) pendingWs = defaultWs.path;
+  } catch (err) {
+    console.warn("[my-agent] 加载会话列表失败", err);
     threads = [];
   }
+  renderThreads();
+  renderWorkspaceChip();
+}
+
+/* 组名与 chip 都取路径最后一段；空路径只在绑定缺行的极端情况下出现，
+   那时退回默认工作区的名字——没有"应用目录"这个特殊分组了。 */
+function workspaceLabel(ws) {
+  const parts = String(ws || "").split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || (defaultWs && defaultWs.name) || "工作区";
+}
+
+/* 折叠状态存 localStorage：和 Open WebUI 一样，折起来是用户的选择，
+   刷新页面、重启应用都该保留。 */
+const COLLAPSE_KEY = "ws-collapsed";
+let collapsedWs = new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "[]"));
+
+/* 工作区目录可能已经不在了（临时目录被系统清掉、项目被删）。这种组点「+」
+   必然失败，所以失败过一次就记下来：不再给加号，直接在标题上写明原因。
+   只记在内存里——重新加载后再试一次的成本，比每次渲染都发请求去探测小。 */
+const staleWs = new Set();
+
+function toggleWorkspace(ws) {
+  if (collapsedWs.has(ws)) collapsedWs.delete(ws);
+  else collapsedWs.add(ws);
+  localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...collapsedWs]));
   renderThreads();
 }
 
@@ -559,23 +973,137 @@ function renderThreads() {
     box.innerHTML = '<div class="thread" style="cursor:default;color:var(--text-faint)">暂无会话</div>';
     return;
   }
+
+  // 必须先按工作区归拢再渲染。列表是 updated_at 倒序，同一工作区的会话可能
+  // 被别的工作区隔开（最新的没设工作区、中间两条设了、后面又都是没设的），
+  // 边遍历边判"工作区变了没"会渲染出重复的分组标题。
+  const groups = new Map();
   for (const t of threads) {
-    const row = document.createElement("div");
-    row.className = "thread" + (t.thread_id === threadId ? " active" : "");
-    const title = document.createElement("span");
-    title.className = "title";
-    title.textContent = t.title;
-    title.title = t.title;
-    row.appendChild(title);
-    if (t.pending) {
-      const dot = document.createElement("span");
-      dot.className = "dot";
-      dot.title = "有待确认的操作";
-      row.appendChild(dot);
-    }
-    row.onclick = () => openThread(t.thread_id);
-    box.appendChild(row);
+    const ws = t.workspace || "";
+    if (!groups.has(ws)) groups.set(ws, []);
+    groups.get(ws).push(t);
   }
+
+  // 组名优先用服务端给的工作区名（工作区表里的展示名），没有才退回路径尾段
+  const labelOf = (ws, items) =>
+    (items[0] && items[0].workspace_name) || workspaceLabel(ws);
+
+  // 一律按目录名字母序，默认工作区没有特殊位置。
+  // 刻意不按最近活动排——那样在某个工作区里发一条消息，整组会跳到最上面，很晕。
+  const ordered = [...groups.entries()].sort(([a, ia], [b, ib]) =>
+    labelOf(a, ia).localeCompare(labelOf(b, ib), "zh")
+  );
+
+  for (const [ws, items] of ordered) {
+    const collapsed = collapsedWs.has(ws);
+    const group = el("div", "ws-group");
+
+    const head = el("div", "ws-head");
+    head.title = ws;
+    const stale = staleWs.has(ws);
+    if (stale) {
+      head.classList.add("stale");
+      head.title = `${ws}\n目录已不存在`;
+    }
+
+    const chev = el("span", "chev");
+    chev.appendChild(svg(collapsed ? ICON.chevronRight : ICON.chevronDown));
+    head.appendChild(chev);
+    head.appendChild(el("span", "name", labelOf(ws, items)));
+    head.appendChild(el("span", "count", String(items.length)));
+    head.onclick = () => toggleWorkspace(ws);
+
+    if (stale) {
+      head.appendChild(el("span", "warn", "目录不存在"));
+    } else {
+      // 「在这里新建对话」，对应 Open WebUI 的"点开文件夹后新对话落在里面"
+      const add = el("button", "add");
+      add.title = ws ? `在 ${labelOf(ws, items)} 里新建对话` : "新建对话";
+      add.setAttribute("aria-label", add.title);
+      add.appendChild(svg(ICON.plus));
+      add.onclick = (e) => {
+        e.stopPropagation();
+        newChatIn(ws);
+      };
+      head.appendChild(add);
+    }
+
+    group.appendChild(head);
+
+    const body = el("div", "ws-body");
+    if (collapsed) body.style.display = "none";
+
+    // 组内沿用原有次序（仍是时间倒序），日期标题只在变化时插一次
+    let dayGroup = null;
+
+    for (const t of items) {
+      const label = dayLabel(t.updated_at);
+      if (label !== dayGroup) {
+        body.appendChild(el("div", "day-label", label));
+        dayGroup = label;
+      }
+
+      const row = el("div", "thread" + (t.thread_id === threadId ? " active" : ""));
+      const title = el("span", "title", t.title);
+      title.title = t.title;
+      row.appendChild(title);
+
+      if (t.pending) {
+        const dot = el("span", "dot");
+        dot.title = "有未完成的操作";
+        row.appendChild(dot);
+      }
+
+      row.appendChild(iconBtn(ICON.trash, "删除这个会话", () => removeThread(t)));
+
+      row.onclick = () => openThread(t.thread_id);
+      body.appendChild(row);
+    }
+
+    group.appendChild(body);
+    box.appendChild(group);
+  }
+}
+
+async function removeThread(item) {
+  if (busy) return;
+
+  const ok = await confirmDialog({
+    title: "删除会话",
+    bodyHtml:
+      `「<b>${escapeHtml(item.title)}</b>」的全部消息与检查点会被移除，无法恢复。` +
+      '<br><span class="sub">该会话在沙箱里获得过的授权不受影响——授权按工作区归属，' +
+      "同一个工作区的其他对话还在用它。</span>",
+    okText: "删除",
+  });
+  if (!ok) return;
+
+  try {
+    const res = await fetch(`/chat/threads/${encodeURIComponent(item.thread_id)}`, {
+      method: "DELETE",
+    });
+    const body = await res.json();
+    if (body.code !== 0) {
+      alert(body.message || "删除失败");
+      return;
+    }
+  } catch (err) {
+    alert(String(err.message || err));
+    return;
+  }
+
+  if (threadId === item.thread_id) {
+    threadId = null;
+    // 接着在这个目录里干活：删掉手上这条会话不等于要离开它所在的工作区
+    pendingWs = item.workspace || (defaultWs && defaultWs.path) || "";
+    outbox = [];
+    outboxThread = null;
+    renderOutbox();
+    events.innerHTML = "";
+    showEmpty();
+  }
+  await loadThreads();
+  input.focus();
 }
 
 function setThread(id) {
@@ -593,6 +1121,145 @@ function el(tag, cls, text) {
   return n;
 }
 
+/* ============================================================
+   图标与消息操作行
+
+   图标路径取自 Heroicons（MIT），与 Open WebUI 用的是同一套。
+   用 createElementNS 而不是 innerHTML：图标是静态常量，但走 DOM API
+   就不必给 innerHTML 开后门。
+   ============================================================ */
+const SVG_NS = "http://www.w3.org/2000/svg";
+const ICON = {
+  copy: "M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184",
+  check: "m4.5 12.75 6 6 9-13.5",
+  trash: "m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0",
+  chevronDown: "m19.5 8.25-7.5 7.5-7.5-7.5",
+  chevronRight: "m8.25 4.5 7.5 7.5-7.5 7.5",
+  plus: "M12 4.5v15m7.5-7.5h-15",
+};
+
+function svg(path) {
+  const s = document.createElementNS(SVG_NS, "svg");
+  s.setAttribute("viewBox", "0 0 24 24");
+  s.setAttribute("fill", "none");
+  s.setAttribute("stroke", "currentColor");
+  s.setAttribute("stroke-width", "2.3");
+  s.setAttribute("stroke-linecap", "round");
+  s.setAttribute("stroke-linejoin", "round");
+  s.setAttribute("aria-hidden", "true");
+  const p = document.createElementNS(SVG_NS, "path");
+  p.setAttribute("d", path);
+  s.appendChild(p);
+  return s;
+}
+
+function iconBtn(path, title, onclick) {
+  const b = el("button", "act");
+  b.title = title;
+  b.setAttribute("aria-label", title);
+  b.appendChild(svg(path));
+  // 消息行本身没有 onclick，但侧边栏的行有——拦掉免得点按钮顺带切会话
+  b.onclick = (e) => { e.stopPropagation(); onclick(); };
+  return b;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // 非安全上下文（http 且非 localhost）拿不到 clipboard API，退化成 execCommand
+    try {
+      const ta = el("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/* 操作行：默认隐藏，悬停或位于最后一条时出现 */
+function addActions(body, getText, note) {
+  const row = el("div", "actions");
+  const btn = iconBtn(ICON.copy, "复制", async () => {
+    if (!(await copyText(getText()))) return;
+    const old = btn.firstChild;
+    btn.replaceChildren(svg(ICON.check));
+    btn.classList.add("done");
+    setTimeout(() => {
+      btn.replaceChildren(old);
+      btn.classList.remove("done");
+    }, 1200);
+  });
+  row.appendChild(btn);
+  if (note) row.appendChild(el("span", "anote", note));
+  body.appendChild(row);
+  return row;
+}
+
+/* ============================================================
+   确认弹窗
+
+   照 Open WebUI 的做法：不用原生 confirm——样式不受控，
+   在桌面端的 WebView 里还会被拦。返回 Promise<boolean>。
+   ============================================================ */
+function confirmDialog({ title, bodyHtml, okText = "确认", cancelText = "取消" }) {
+  return new Promise((resolve) => {
+    const mask = el("div", "mask");
+    const modal = el("div", "modal");
+    modal.appendChild(el("div", "mtitle", title));
+    const body = el("div", "mbody");
+    body.innerHTML = bodyHtml;
+    modal.appendChild(body);
+
+    const okBtn = el("button", "solid", okText);
+    const cancelBtn = el("button", "", cancelText);
+
+    let settled = false;
+    const close = (val) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey);
+      mask.remove();
+      resolve(val);
+    };
+    const onKey = (e) => { if (e.key === "Escape") close(false); };
+
+    cancelBtn.onclick = () => close(false);
+    okBtn.onclick = () => close(true);
+    // 点遮罩关掉，点弹窗内部不关
+    mask.onclick = (e) => { if (e.target === mask) close(false); };
+    document.addEventListener("keydown", onKey);
+
+    const row = el("div", "mrow");
+    row.appendChild(cancelBtn);
+    row.appendChild(okBtn);
+    modal.appendChild(row);
+    mask.appendChild(modal);
+    document.body.appendChild(mask);
+    cancelBtn.focus();
+  });
+}
+
+function dayLabel(iso) {
+  const d = new Date(iso || "");
+  if (isNaN(d.getTime())) return "更早";
+  const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((midnight(new Date()) - midnight(d)) / 86400000);
+  if (days <= 0) return "今天";
+  if (days === 1) return "昨天";
+  if (days < 7) return "更早 7 天";
+  if (days < 30) return "更早 30 天";
+  return "更早";
+}
+
 function clearList() { list.innerHTML = ""; }
 
 function showEmpty() {
@@ -607,10 +1274,19 @@ function showEmpty() {
 
 function toBottom() { scroll.scrollTop = scroll.scrollHeight; }
 
+/* 出错时把盒子追加到消息流末尾：不覆盖正在看的内容，也不用 alert 堵住整个渲染线程 */
+function showError(text) {
+  const empt = list.querySelector(".empty");
+  if (empt) empt.remove();
+  list.appendChild(el("div", "errbox", text));
+  toBottom();
+}
+
 function addUserTurn(text) {
   const turn = el("div", "turn user");
   const body = el("div", "body");
   body.appendChild(el("div", "user-bubble", text));
+  addActions(body, () => text);
   turn.appendChild(body);
   list.appendChild(turn);
   toBottom();
@@ -629,17 +1305,61 @@ function addAssistantTurn() {
   turn.appendChild(body);
   list.appendChild(turn);
   toBottom();
-  return { md, textNode, caret, body };
+  return { turn, md, textNode, caret, body };
 }
 
-function addStaticTurn(role, content) {
+/* ---------- 工具卡片 ----------
+   实时渲染与历史恢复共用同一套 DOM：实时靠事件流（tool_start / tool_end），
+   历史靠消息状态里推出来的 tool_calls（AIMessage 的调用 + ToolMessage 的结果）。 */
+function makeToolCard(name, args) {
+  const card = el("div", "tool");
+  const head = el("div", "tool-head");
+  head.appendChild(el("span", "chev", "▶"));
+  head.appendChild(el("span", "tname", name));
+  const state = el("span", "tstate", "运行中…");
+  head.appendChild(state);
+  const body = el("div", "tool-body", JSON.stringify(args || {}, null, 2));
+  card.appendChild(head);
+  card.appendChild(body);
+  head.onclick = () => card.classList.toggle("open");
+  return { card, state, body, args: args || {} };
+}
+
+/* 三种收尾状态：完成 / 失败 / 未完成（停在待确认上，或那一轮被中断了） */
+const TOOL_STATE = {
+  ok: { text: "完成", color: "var(--ok)" },
+  failed: { text: "失败", color: "var(--danger)" },
+  pending: { text: "未完成", color: "var(--warn)" },
+};
+
+function finishTool(t, state, output) {
+  const look = TOOL_STATE[state] || TOOL_STATE.ok;
+  t.state.textContent = look.text;
+  t.state.style.color = look.color;
+  if (state === "failed") t.card.classList.add("fail");
+  t.body.textContent = JSON.stringify(t.args, null, 2) + "\n→ " + (output ?? "");
+  t.done = true;
+}
+
+function addStaticTurn(role, content, toolCalls = []) {
   if (role === "user") { addUserTurn(content); return; }
   const turn = el("div", "turn bot");
   turn.appendChild(el("div", "avatar", "AI"));
   const body = el("div", "body");
+
+  // 卡片在正文上方：当时的顺序就是先调工具、再给结论
+  for (const call of toolCalls) {
+    const t = makeToolCard(call.name, call.args);
+    if (call.state === "failed") finishTool(t, "failed", call.error);
+    else if (call.state === "pending") finishTool(t, "pending", call.error || "等待用户确认");
+    else finishTool(t, "ok", call.result);
+    body.appendChild(t.card);
+  }
+
   const md = el("div", "md");
   md.innerHTML = renderMd(content);
   body.appendChild(md);
+  if (content) addActions(body, () => content);
   turn.appendChild(body);
   list.appendChild(turn);
   toBottom();
@@ -662,6 +1382,19 @@ function newTurn() {
 
   const ctx = {
     sawInterrupt: false,
+    sawDone: false,
+    sawMessageEnd: false,
+    sawError: false,
+
+    /* 被中断时的收尾。手动停止、连接断开、服务挂掉——一律同等对待，不给两套说法 */
+    interrupted() {
+      caret.remove();
+      for (const t of Object.values(tools)) {
+        if (!t.done) finishTool(t, "pending", "已中断");
+      }
+      body.appendChild(el("div", "note", "已中断"));
+      toBottom();
+    },
 
     text(t) {
       buffer += t;
@@ -670,41 +1403,35 @@ function newTurn() {
     },
 
     toolStart(d) {
-      const card = el("div", "tool");
-      const head = el("div", "tool-head");
-      head.appendChild(el("span", "chev", "▶"));
-      head.appendChild(el("span", "tname", d.name));
-      head.appendChild(el("span", "tstate", "运行中…"));
-      const bodyEl = el("div", "tool-body", JSON.stringify(d.args, null, 2));
-      card.appendChild(head);
-      card.appendChild(bodyEl);
-      head.onclick = () => card.classList.toggle("open");
-      md.parentNode.insertBefore(card, md);
-      tools[d.id] = { card, state: head.querySelector(".tstate"), body: bodyEl, args: d.args };
+      const t = makeToolCard(d.name, d.args);
+      md.parentNode.insertBefore(t.card, md);
+      tools[d.id] = t;
       toBottom();
     },
 
     toolEnd(d) {
       const t = tools[d.id];
       if (!t) return;
-      t.state.textContent = d.ok ? "完成" : "失败";
-      t.state.style.color = d.ok ? "var(--ok)" : "var(--danger)";
-      if (!d.ok) t.card.classList.add("fail");
-      t.body.textContent =
-        JSON.stringify(t.args, null, 2) + "\n→ " + (d.ok ? d.result : d.error);
+      finishTool(t, d.ok ? "ok" : "failed", d.ok ? d.result : d.error);
       toBottom();
     },
 
     interrupt(d) {
       ctx.sawInterrupt = true;
+      // 等确认的工具不会再有 tool_end：把还挂着的卡片收成"未完成"，别让它一直转
+      for (const t of Object.values(tools)) {
+        if (!t.done) finishTool(t, "pending", "等待用户确认");
+      }
       const card = el("div", "confirm");
       const title = el("div", "ctitle", "需要确认");
       card.appendChild(title);
       card.appendChild(el("div", "cprompt", d.prompt));
 
       const opts = el("div", "copts");
-      (d.options || ["确认", "取消"]).forEach((o) => {
-        const b = el("button", o === "确认" ? "primary" : "", o);
+      const choices = d.options || ["确认", "取消"];
+      choices.forEach((o, index) => {
+        // 约定：拒绝类选项在前，放行类在后，给最后一个上主色
+        const b = el("button", index === choices.length - 1 ? "primary" : "", o);
         b.onclick = () => {
           opts.remove();
           card.appendChild(el("div", "answer", "已选择：" + o));
@@ -718,18 +1445,20 @@ function newTurn() {
     },
 
     messageEnd(d) {
+      ctx.sawMessageEnd = true;
       caret.remove();
       if (buffer) paint();
-      const meta = el("div", "meta");
-      if (d.usage && (d.usage.input_tokens || d.usage.output_tokens)) {
-        meta.appendChild(el("span", "", `in ${d.usage.input_tokens} · out ${d.usage.output_tokens}`));
-      }
-      if (d.message_id) meta.appendChild(el("span", "", d.message_id.slice(-8)));
-      if (meta.childNodes.length) body.appendChild(meta);
+      const u = d.usage || {};
+      const note = (u.input_tokens || u.output_tokens)
+        ? `in ${u.input_tokens || 0} · out ${u.output_tokens || 0}`
+        : "";
+      addActions(body, () => buffer, note);
       toBottom();
     },
 
     error(d) {
+      console.warn("[my-agent] 对话流返回 error", { code: d.code, message: d.message });
+      ctx.sawError = true;
       caret.remove();
       body.appendChild(el("div", "errbox", `[${d.code}] ${d.message}`));
       toBottom();
@@ -748,72 +1477,337 @@ function logEvent(seq, payload) {
 }
 
 /* ============================================================
+   待发送暂存
+
+   会话卡在确认上时，新消息不能硬发：LangGraph 会丢弃 interrupt，
+   留下一条没有 ToolMessage 回应的 tool_calls，之后必然 400。
+
+   这里用前端 FIFO 排队即可，不需要消息队列——真正的约束只有两条：
+   同会话内有序、必须等 interrupt 全部消化完。那是状态机，不是投递问题。
+   等确认处理完（服务端 pending 变 false）再自动补发。
+   ============================================================ */
+const outboxEl = document.getElementById("outbox");
+
+function renderOutbox() {
+  outboxEl.innerHTML = "";
+  if (outboxThread !== threadId || !outbox.length) return;
+  for (const text of outbox) {
+    const row = el("div", "item");
+    row.appendChild(el("span", "tag", "待发送"));
+    row.appendChild(el("span", "txt", text));
+    outboxEl.appendChild(row);
+  }
+}
+
+function threadPending() {
+  const found = threads.find((x) => x.thread_id === threadId);
+  return Boolean(found && found.pending);
+}
+
+async function drainOutbox() {
+  if (busy || !outbox.length) return;
+  if (outboxThread !== threadId) { outbox = []; outboxThread = null; renderOutbox(); return; }
+  if (threadPending()) return;   // 确认还没处理完，继续等
+
+  const next = outbox.shift();
+  renderOutbox();
+  await send(next, true);
+}
+
+/* ============================================================
    发送 / 继续
    ============================================================ */
-async function send() {
-  if (busy) return;
-  const message = input.value.trim();
+
+/* 运行中按钮变"停止"（Esc 同效）：中断的是这一轮，不是会话 */
+function setRunButton(running) {
+  sendBtn.textContent = running ? "■" : "↑";
+  sendBtn.title = running ? "停止（Esc）" : "发送";
+  sendBtn.classList.toggle("stop", running);
+}
+
+function stopRun() {
+  if (currentRun) currentRun.abort();
+}
+
+/* 流失败怎么表达：服务端明确拒绝（HTTP）才算错误；停止、断网、服务挂掉都归"已中断" */
+function handleStreamError(err, ctx) {
+  if (err && err.name === "AbortError") return;   // 停止按钮自己触发的，不弹错误
+  if (err && err.fromHttp) {
+    ctx.error({ code: -1, message: String(err.message || err) });
+    return;
+  }
+  console.warn("[my-agent] 流被中断", err);
+}
+
+/* 一轮结束后的收尾：既没 done、也没 message_end，就是被中断了 */
+function finishTurn(ctx) {
+  if (ctx.sawDone || ctx.sawMessageEnd || ctx.sawError) return;
+  ctx.interrupted();
+}
+
+async function send(text, fromOutbox = false) {
+  const message = (text ?? input.value).trim();
   if (!message) return;
+  console.debug("[my-agent] 发送", { threadId, pendingWs, chars: message.length });
+
+  // 运行中（或在等确认）不打断、也不丢消息：排进待发送，本轮结束后自动补发。
+  // 和 Claude Code 一样：Enter 是排队；要停下当前这轮用停止按钮 / Esc。
+  if (!fromOutbox && (busy || threadPending())) {
+    outbox.push(message);
+    outboxThread = threadId;
+    input.value = "";
+    input.style.height = "auto";
+    renderOutbox();
+    return;
+  }
 
   busy = true;
-  sendBtn.disabled = true;
-  input.value = "";
-  input.style.height = "auto";
+  setRunButton(true);
 
   if (!threadId) {
     threadId = crypto.randomUUID().replace(/-/g, "");
+    // 新会话一定有归属：没挑过就用默认工作区（应用所在目录），它和别的工作区同类。
+    // 绑定必须在开跑之前：失败就别发，否则 agent 会带着错误的沙箱边界执行。
+    // 这时输入框的字还没清，可以重试。
+    const ws = pendingWs || (defaultWs && defaultWs.path) || "";
+    if (ws) {
+      try {
+        await bindWorkspace(threadId, ws);
+      } catch (err) {
+        threadId = null;
+        busy = false;
+        setRunButton(false);
+        showError(`工作区 ${ws} 不可用：${err.message || err}`);
+        input.focus();
+        return;
+      }
+    }
   }
 
+  input.value = "";
+  input.style.height = "auto";
   addUserTurn(message);
   const ctx = newTurn();
   try {
+    currentRun = new AbortController();
     await streamChat(message, threadId, ctx);
   } catch (err) {
-    ctx.error({ code: -1, message: String(err.message || err) });
+    handleStreamError(err, ctx);
   } finally {
+    currentRun = null;
+    finishTurn(ctx);
     await loadThreads();
     busy = false;
-    sendBtn.disabled = false;
+    setRunButton(false);
     input.focus();
+    await drainOutbox();
   }
 }
 
 async function resume(value) {
   if (busy || !threadId) return;
   busy = true;
-  sendBtn.disabled = true;
+  setRunButton(true);
 
   const ctx = newTurn();
   try {
+    currentRun = new AbortController();
     await streamResume(threadId, value, ctx);
   } catch (err) {
-    ctx.error({ code: -1, message: String(err.message || err) });
+    handleStreamError(err, ctx);
   } finally {
+    currentRun = null;
+    finishTurn(ctx);
     await loadThreads();
     busy = false;
-    sendBtn.disabled = false;
+    setRunButton(false);
     input.focus();
+    await drainOutbox();
   }
 }
 
 async function openThread(id) {
   if (busy) return;
+  console.debug("[my-agent] 打开会话", id);
   threadId = id;
+  outbox = [];
+  outboxThread = null;
+  renderOutbox();
   renderThreads();
+  renderWorkspaceChip();
   clearList();
   try {
-    const messages = await loadHistory(id);
-    if (!messages.length) showEmpty();
-    else messages.forEach((m) => addStaticTurn(m.role, m.content));
+    const { messages, pending } = await loadHistory(id);
+    if (!messages.length && !pending.length) {
+      showEmpty();
+      return;
+    }
+    messages.forEach((m) => addStaticTurn(m.role, m.content, m.tool_calls || []));
+
+    // 卡住的会话要能在这里继续确认，否则用户进来只见历史、无处可点
+    if (pending.length) {
+      const ctx = newTurn();
+      pending.forEach((item) => ctx.interrupt(item));
+      ctx.messageEnd({});
+    }
   } catch (err) {
     list.appendChild(el("div", "errbox", `加载历史失败：${err.message || err}`));
   }
 }
 
 /* ============================================================
+   工作区
+
+   工作区是沙箱的信任边界：工具能自由访问工作区内的路径，越界需用户授权。
+   它**只能由用户设置**——agent 若能改自己的边界，边界就不存在了。
+
+   选目录的语义是"从这里开始干活"：开一条绑定该目录的新对话，**绝不改动已打开的会话**。
+   绑定发生在第一条消息发出之前（那时会话才真正诞生）；在那之前只改前端状态，
+   所以"选了目录又不用"不会在库里留下任何东西。
+
+   浏览目录走的是不受沙箱约束的接口：沙箱限制的是 agent，不是用户。
+   ============================================================ */
+const wsPanel = document.getElementById("wsPanel");
+const wsPath = document.getElementById("wsPath");
+const wsList = document.getElementById("wsList");
+const wsMsg = document.getElementById("wsMsg");
+const wsPick = document.getElementById("wsPick");
+const wsLabel = document.getElementById("wsLabel");
+const wsBtn = document.getElementById("wsBtn");
+
+let wsBrowsing = "";
+
+/* 当前上下文的工作区：有打开的会话看会话，否则看这条还没落库的新对话 */
+function activeWorkspace() {
+  if (!threadId) return pendingWs;
+  const found = threads.find((x) => x.thread_id === threadId);
+  return (found && found.workspace) || "";
+}
+
+function renderWorkspaceChip() {
+  const ws = activeWorkspace();
+  wsLabel.textContent = workspaceLabel(ws);
+  wsBtn.title = ws
+    ? `工作区：${ws}\n新对话将在这个目录下开始`
+    : "工作区：默认（应用所在目录）";
+  wsBtn.classList.toggle("kicked", Boolean(ws));
+}
+
+async function browseTo(path) {
+  wsMsg.textContent = "";
+  try {
+    const res = await fetch(`/chat/browse?path=${encodeURIComponent(path || "")}`);
+    const body = await res.json();
+    if (body.code !== 0) {
+      wsMsg.textContent = body.message || "读取目录失败";
+      return;
+    }
+    const data = body.data;
+    wsBrowsing = data.path;
+    wsPath.textContent = data.path || "选择一个起点";
+    wsPick.disabled = !data.path;
+    wsList.innerHTML = "";
+
+    if (data.parent) {
+      const up = el("div", "row");
+      up.appendChild(el("span", "icon", "↑"));
+      up.appendChild(el("span", "", ".."));
+      up.onclick = () => browseTo(data.parent);
+      wsList.appendChild(up);
+    }
+
+    if (!data.dirs.length) {
+      wsList.appendChild(el("div", "empty", "没有子目录"));
+    }
+    for (const dir of data.dirs) {
+      const row = el("div", "row");
+      row.appendChild(el("span", "icon", "▸"));
+      row.appendChild(el("span", "", dir.name));
+      row.onclick = () => browseTo(dir.path);
+      wsList.appendChild(row);
+    }
+  } catch (err) {
+    wsMsg.textContent = String(err.message || err);
+  }
+}
+
+function openWorkspacePicker() {
+  // 有会话打开时，选定目录的语义是"开一条新对话"；已经在空白新对话里才是"就用这个目录"
+  wsPick.textContent = threadId ? "在此工作区新建对话" : "选用此目录";
+  wsPanel.classList.add("open");
+  browseTo(activeWorkspace());
+}
+
+/* 桌面窗口（pywebview）里有系统目录选择器，浏览器里没有——浏览器出于安全
+   拿不到真实路径（showDirectoryPicker 只给目录名），设不了工作区。
+   桥是页面加载后才注入的，所以既查当前状态也听一次事件，避免竞态。 */
+let pywebviewReady = Boolean(window.pywebview && window.pywebview.api);
+window.addEventListener("pywebviewready", () => { pywebviewReady = true; });
+
+function nativePicker() {
+  if (!pywebviewReady || !window.pywebview || !window.pywebview.api) return null;
+  return window.pywebview.api.pick_folder || null;
+}
+
+/* 探活：目录还在不在。用只读的 browse，而不是写库——探活失败不该在库里留下任何东西 */
+async function checkWorkspacePath(path) {
+  const res = await fetch(`/chat/browse?path=${encodeURIComponent(path)}`);
+  const body = await res.json();
+  if (body.code !== 0) throw new Error(body.message || "目录不可用");
+}
+
+/* 会话与工作区的绑定只在会话诞生时写一次；这条接口不再用来搬动既有会话 */
+async function bindWorkspace(id, path) {
+  const res = await fetch("/chat/workspace", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thread_id: id, path }),
+  });
+  const body = await res.json();
+  if (body.code !== 0) throw new Error(body.message || "绑定工作区失败");
+  return body.data.workspace;
+}
+
+/* 切到某个工作区：有会话打开就开一条新的（旧会话原地不动），否则只改待绑定的目录。
+   目录不可用时把状态复位并抛出——反馈交给调用方，页内面板与桌面弹窗各有各的落点。 */
+async function switchWorkspace(path) {
+  if (busy) return;
+  console.info("[my-agent] 切换工作区", path || "(默认)");
+  startPendingChat(path);
+  if (!path) return;
+  try {
+    await checkWorkspacePath(path);
+    staleWs.delete(path);
+  } catch (err) {
+    staleWs.add(path);
+    // 目录没了就别停在它上面，退回默认工作区（应用所在目录）
+    startPendingChat(defaultWs ? defaultWs.path : "");
+    throw err;
+  }
+}
+
+async function pickWorkspace() {
+  if (!wsBrowsing) return;
+  wsPick.disabled = true;
+  try {
+    await switchWorkspace(wsBrowsing);
+    wsPanel.classList.remove("open");
+  } catch (err) {
+    wsMsg.textContent = String(err.message || err);
+  } finally {
+    wsPick.disabled = !wsBrowsing;
+  }
+}
+
+/* ============================================================
    交互
    ============================================================ */
-sendBtn.onclick = send;
+sendBtn.onclick = () => { if (busy) stopRun(); else send(); };
+
+/* Esc = 停止当前这一轮（同按钮）。只在运行中拦截，免得和弹窗自己的 Esc 抢 */
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && busy) { e.preventDefault(); stopRun(); }
+});
 
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -823,17 +1817,63 @@ input.addEventListener("input", () => {
   input.style.height = Math.min(input.scrollHeight, 190) + "px";
 });
 
-document.getElementById("newChat").onclick = () => {
+/* 开始一条还没落库的新对话。工作区只记在前端——发第一条消息时才绑到会话上，
+   所以"选了目录又不用"不会在库里留下任何东西（旧版会先造一条空会话）。 */
+function startPendingChat(ws) {
   if (busy) return;
+  pendingWs = ws;
   threadId = null;
+  outbox = [];
+  outboxThread = null;
+  renderOutbox();
   events.innerHTML = "";
   renderThreads();
+  renderWorkspaceChip();
   showEmpty();
   input.focus();
-};
+}
+
+/* 「新对话」沿用此刻所在的工作区——先读正看会话的目录，再清空当前会话 */
+function startNewChat() {
+  startPendingChat(activeWorkspace());
+}
+
+/* 在指定工作区里开新对话。分组标题上的「+」与顶栏 chip 走的是同一条路：
+   开一条绑定该目录的新对话，既有会话原地不动。 */
+async function newChatIn(ws) {
+  if (busy) return;
+  try {
+    await switchWorkspace(ws);
+  } catch (err) {
+    // 不弹 alert：它会把渲染线程堵死。失败原因挂在消息区，组头上标"目录不存在"。
+    showError(`工作区 ${ws} 不可用：${err.message || err}`);
+  }
+}
+
+document.getElementById("newChat").onclick = () => startNewChat();
 
 document.getElementById("sideBtn").onclick = () =>
   document.getElementById("side").classList.toggle("hide");
+
+wsBtn.onclick = async () => {
+  if (busy) return;
+  const pick = nativePicker();
+  if (pick) {
+    // 桌面端直接用系统目录选择器，不绕自绘的页内浏览
+    try {
+      const path = await pick(activeWorkspace());
+      if (!path || path === activeWorkspace()) return;
+      await switchWorkspace(path);
+    } catch (err) {
+      showError(`切换工作区失败：${err.message || err}`);
+    }
+    return;
+  }
+  if (wsPanel.classList.contains("open")) wsPanel.classList.remove("open");
+  else openWorkspacePicker();
+};
+document.getElementById("wsClose").onclick = () => wsPanel.classList.remove("open");
+wsPick.onclick = () => pickWorkspace();
 
 document.getElementById("logBtn").onclick = (e) => {
   drawer.classList.toggle("open");
