@@ -23,12 +23,11 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
+from app.agent.tools.common import truncate_tail
 from app.config import PROJECT_ROOT
 
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 600
-MAX_BYTES = 50 * 1024
-MAX_LINES = 2000
 MAX_BUFFER = 1024 * 1024
 READ_CHUNK = 64 * 1024
 
@@ -60,38 +59,6 @@ def clean(text: str) -> str:
     text = ANSI_RE.sub("", text)
     text = CONTROL_RE.sub("", text)
     return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def truncate_tail(text: str, already_dropped: int = 0) -> str:
-    """超限时保留尾部，并说明丢了多少——模型据此才知道要换策略。"""
-    lines = text.split("\n")
-    dropped_lines = 0
-    if len(lines) > MAX_LINES:
-        dropped_lines = len(lines) - MAX_LINES
-        lines = lines[-MAX_LINES:]
-    out = "\n".join(lines)
-
-    dropped_bytes = already_dropped
-    encoded = out.encode("utf-8", "ignore")
-    if len(encoded) > MAX_BYTES:
-        dropped_bytes += len(encoded) - MAX_BYTES
-        out = encoded[-MAX_BYTES:].decode("utf-8", "ignore")
-
-    if not (dropped_lines or dropped_bytes):
-        return out
-
-    dropped = " 与 ".join(
-        part
-        for part in (
-            f"{dropped_lines} 行" if dropped_lines else "",
-            f"{dropped_bytes} 字节" if dropped_bytes else "",
-        )
-        if part
-    )
-    return (
-        f"[输出过大，已丢弃开头的 {dropped}，以下仅为末尾部分。"
-        f"需要完整内容请把命令输出重定向到文件后再分段读取]\n{out}"
-    )
 
 
 async def drain(proc: asyncio.subprocess.Process, chunks: list[bytes], stats: dict) -> None:
