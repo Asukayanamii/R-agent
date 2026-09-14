@@ -5,6 +5,7 @@
 上层路由与前端不感知 LangGraph 的存在。
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -189,15 +190,14 @@ def _workspace_token(config: dict):
 
 async def _run_tools(state: MessagesState):
     """
-    逐个征求人工确认，然后只执行通过的调用。
+    逐个征求人工确认，然后并行执行通过的调用。
 
     不用 ToolNode 的原因：它会执行 AIMessage 里的全部调用（含已被回绝的），
     并产生重复 tool_call_id 的 ToolMessage，审批拒绝因此形同虚设。
     这里统一承担审批与执行，单一执行路径。
 
-    注意 `except GraphBubbleUp: raise` 不能删。interrupt() 抛的就是它，
-    被 except Exception 接住的话，工具内部的沙箱授权询问会退化成一条
-    "工具执行失败"——静默失效，而且很难查。
+    审批仍然一个一个来：interrupt 的恢复值是按发生顺序回填的，一次只弹一张卡
+    才谈得上"回答的是哪一个"。执行阶段则并行，见 _run_calls。
     """
     config = get_config()
     calls = state["messages"][-1].tool_calls
@@ -214,53 +214,107 @@ async def _run_tools(state: MessagesState):
             approved[call["id"]] = decision == "确认"
             logger.info("工具审批 name=%s 决定=%s", call["name"], decision)
 
-    results = []
     token = _workspace_token(config)
     try:
-        for call in calls:
-            if not approved.get(call["id"], True):
-                logger.warning("工具被拒绝 name=%s", call["name"])
-                results.append(
-                    ToolMessage(content=REJECT_MESSAGE, tool_call_id=call["id"])
-                )
-                continue
-
-            tool = TOOL_MAP.get(call["name"])
-            if tool is None:
-                logger.warning("模型要调未知工具 name=%s", call["name"])
-                results.append(
-                    ToolMessage(
-                        content=f"未知工具：{call['name']}",
-                        tool_call_id=call["id"],
-                        status="error",
-                    )
-                )
-                continue
-
-            try:
-                output = await tool.ainvoke(call["args"], config=config)
-            except GraphBubbleUp:
-                raise
-            except ToolException as exc:
-                # 工具自己判定"没做成"（文件不存在、沙箱拒绝、命令非零退出……）。
-                # 这句话模型照旧收到，但打上 error 标记，界面与历史才显示"失败"。
-                # 不用 LangChain 的 handle_tool_error：它要靠运行时能取到 tool_call_id
-                # 才会把 status 包进 ToolMessage，而我们是手写执行路径（见下面注释）。
-                logger.warning("工具失败 name=%s：%s", call["name"], exc)
-                results.append(_error_message(call["id"], str(exc)))
-            except Exception as exc:
-                # 其余异常（参数校验失败、工具内部 bug）：同样是失败，标出是异常
-                logger.warning("工具异常 name=%s：%s", call["name"], exc)
-                results.append(_error_message(call["id"], f"工具执行失败：{exc}"))
-            else:
-                results.append(
-                    ToolMessage(content=str(output), tool_call_id=call["id"])
-                )
+        results = await _run_calls(calls, config, approved)
     finally:
         if token is not None:
             current_workspace.reset(token)
 
     return {"messages": results}
+
+
+async def _invoke_call(
+    call: dict, config: dict, approved: dict[str, bool]
+) -> ToolMessage:
+    """
+    跑一次调用，把"没做成"收成带 error 标记的回执。
+
+    除了中断，什么异常都在这里结束：模型照旧收到那句话，而失败由 status 标出来。
+    """
+    if not approved.get(call["id"], True):
+        logger.warning("工具被拒绝 name=%s", call["name"])
+        return ToolMessage(content=REJECT_MESSAGE, tool_call_id=call["id"])
+
+    tool = TOOL_MAP.get(call["name"])
+    if tool is None:
+        logger.warning("模型要调未知工具 name=%s", call["name"])
+        return _error_message(call["id"], f"未知工具：{call['name']}")
+
+    try:
+        output = await tool.ainvoke(call["args"], config=config)
+    except GraphBubbleUp:
+        # 这句不能删，也不能挪到 except Exception 后面：GraphBubbleUp 继承 Exception，
+        # interrupt() 抛的就是它。被当成工具失败的话，工具内部的沙箱授权询问会静默
+        # 退化成一条"工具执行失败"，很难查。
+        raise
+    except ToolException as exc:
+        # 工具自己判定"没做成"（文件不存在、沙箱拒绝、命令非零退出……）。
+        # 这句话模型照旧收到，但打上 error 标记，界面与历史才显示"失败"。
+        # 不用 LangChain 的 handle_tool_error：它要靠运行时能取到 tool_call_id
+        # 才会把 status 包进 ToolMessage，而这里是手写的执行路径。
+        logger.warning("工具失败 name=%s：%s", call["name"], exc)
+        return _error_message(call["id"], str(exc))
+    except Exception as exc:
+        # 其余异常（参数校验失败、工具内部 bug）：同样是失败，标出是异常
+        logger.warning("工具异常 name=%s：%s", call["name"], exc)
+        return _error_message(call["id"], f"工具执行失败：{exc}")
+    return ToolMessage(content=str(output), tool_call_id=call["id"])
+
+
+async def _run_calls(
+    calls: list[dict], config: dict, approved: dict[str, bool]
+) -> list[ToolMessage]:
+    """
+    同一轮的多个调用并行执行。
+
+    并发的含义要看清：工具都是 async 的，重叠的是它们的**等待**（子进程、文件 IO），
+    同步段照样只有一份——这是事件循环上的并发，不是把工具丢进线程池。
+
+    第一个中断（或异常）冒头就取消其余调用：节点马上会被中断掀翻、整轮重跑，
+    留着它们跑完只会产生没人认领的副作用（命令还在后台改工作区）。被取消的一方
+    不会留下"失败"卡片——它没有结果，前端在收到确认卡片时把运行中的卡片收成未完成。
+
+    不用 TaskGroup：它会把异常包进异常组，LangGraph 就认不出那个中断了。
+    """
+    happened: list[BaseException] = []
+
+    async def run(call: dict) -> ToolMessage:
+        try:
+            return await _invoke_call(call, config, approved)
+        except BaseException as exc:
+            # 记"实际发生"的先后，_run_calls 结尾要用（为什么见那里）
+            happened.append(exc)
+            raise
+
+    tasks = [asyncio.create_task(run(call)) for call in calls]
+    try:
+        _, running = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    except BaseException:
+        # 本轮自己被取消（用户停止、连接断开）：连子任务一起收干净，别留下还在跑的进程
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    for task in running:
+        task.cancel()
+    await asyncio.gather(*running, return_exceptions=True)
+
+    results: list[ToolMessage] = []
+    for task in tasks:
+        if task.cancelled():
+            continue
+        # 每个任务的异常都要取一次：不取 asyncio 会在回收时报 "never retrieved"
+        if task.exception() is None:
+            results.append(task.result())
+
+    if happened:
+        # 抛**最早发生**的那个，不能按调用顺序挑：LangGraph 给一个 task 里的多次
+        # interrupt 编号，就是按发生先后，恢复值也按这个编号回填。抛错一个，
+        # 用户对这张卡片的回答就会落到另一个调用手里（实测见 LESSONS）。
+        raise happened[0]
+    return results
 
 
 def _build_model() -> BaseChatModel:
