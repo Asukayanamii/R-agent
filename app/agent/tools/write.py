@@ -2,7 +2,9 @@
 
 from langchain_core.tools import tool
 
-from app.agent.tools.common import rel, resolve_path
+from app.agent.sandbox import WRITE, guard_path
+from app.agent.tools.common import rel
+from app.exceptions import SandboxDenied
 
 
 @tool
@@ -16,8 +18,8 @@ async def write(path: str, content: str) -> str:
     - 覆盖已有文件会丢弃原有内容
     """
     try:
-        target = resolve_path(path)
-    except ValueError as exc:
+        target = guard_path(path, WRITE)
+    except SandboxDenied as exc:
         return str(exc)
 
     if target.is_dir():

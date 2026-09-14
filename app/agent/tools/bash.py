@@ -23,8 +23,8 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
+from app.agent.runtime import current_workspace
 from app.agent.tools.common import truncate_tail
-from app.config import PROJECT_ROOT
 
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 600
@@ -97,25 +97,30 @@ def kill_tree(proc: asyncio.subprocess.Process) -> None:
 @tool
 async def bash(command: str, timeout_sec: int = DEFAULT_TIMEOUT) -> str:
     """
-    在项目根目录下执行 shell 命令，返回合并后的 stdout/stderr 与退出码。
+    在当前工作区下执行 shell 命令，返回合并后的 stdout/stderr 与退出码。
 
     用法说明：
     - timeout_sec 为超时秒数，上限 600；超时会终止整个进程树，并返回此前已产生的输出
     - 不接受交互式输入，需要确认的命令请自带 -y 之类的非交互参数
     - 输出超过 50KB 或 2000 行时只保留末尾，并在结果里注明丢弃了多少
-    - 工作目录是项目根目录，需要切换目录请写成 `cd 子目录 && 命令`
+    - 工作目录就是工作区根目录，需要切子目录请写成 `cd 子目录 && 命令`
+    - **沙箱不约束本工具**：shell 能访问工作区之外的位置。别把文件工具的限制当成覆盖 bash 的边界
     """
     if not command.strip():
         return "命令为空。"
 
     timeout = max(1, min(int(timeout_sec), MAX_TIMEOUT))
     shell = shell_command()
+    workdir = current_workspace.get()
+
+    if not workdir.is_dir():
+        return f"工作区不存在或不是目录：{workdir.as_posix()}"
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *shell,
             command,
-            cwd=str(PROJECT_ROOT),
+            cwd=str(workdir),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,

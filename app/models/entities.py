@@ -11,3 +11,4 @@ class ThreadRecord:
     title: str = ""
     updated_at: str = ""
     pending: bool = False
+    workspace: str = ""

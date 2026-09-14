@@ -1,15 +1,14 @@
 """
-工具共用的路径解析、越界防护与输出截断。
+工具共用的路径展示、文件遍历与输出截断。
 
-单独抽出来是因为六个文件工具都要用，且**越界防护是安全属性**——
-模型给的路径可能来自不可信内容（读进来的文件、命令输出），
-不拦 `../../` 就等于把整个磁盘交给它。
+**路径检查不在这里**——越界与受保护路径的判定在 `app.agent.sandbox`，
+因为那需要触发 interrupt 征求授权，属于会话级行为。
 """
 
 import os
 from pathlib import Path
 
-from app.config import PROJECT_ROOT
+from app.agent.runtime import workspace_relative
 
 MAX_BYTES = 50 * 1024
 MAX_LINES = 2000
@@ -33,28 +32,9 @@ SKIP_DIRS = {
 }
 
 
-def resolve_path(raw: str) -> Path:
-    """把参数路径解析到项目根之下，越界一律拒绝。"""
-    candidate = Path(raw.strip() or ".").expanduser()
-    if not candidate.is_absolute():
-        candidate = PROJECT_ROOT / candidate
-    resolved = candidate.resolve()
-    if resolved != PROJECT_ROOT and PROJECT_ROOT not in resolved.parents:
-        raise ValueError(f"路径越出项目范围：{raw}")
-    return resolved
-
-
 def rel(path: Path) -> str:
-    """
-    展示用：尽量给相对项目根的路径，且统一用正斜杠。
-
-    Windows 的反斜杠在模型输出里容易被当成转义符，也不跨平台，
-    所以对外一律用 POSIX 分隔符；回传时 Path 两种都认。
-    """
-    try:
-        return path.relative_to(PROJECT_ROOT).as_posix() or "."
-    except ValueError:
-        return path.as_posix()
+    """展示用：相对当前工作区的路径。实现见 runtime.workspace_relative。"""
+    return workspace_relative(path)
 
 
 def looks_binary(path: Path, sniff: int = 8192) -> bool:

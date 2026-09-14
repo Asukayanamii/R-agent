@@ -2,19 +2,20 @@
 
 from langchain_core.tools import tool
 
+from app.agent.sandbox import READ, guard_path
 from app.agent.tools.common import (
     MAX_LINES,
     looks_binary,
     rel,
-    resolve_path,
     truncate_head,
 )
+from app.exceptions import SandboxDenied
 
 
 @tool
 async def read(path: str, offset: int = 1, limit: int = MAX_LINES) -> str:
     """
-    读取项目内的文本文件，返回带行号的内容。
+    读取工作区内的文本文件，返回带行号的内容。
 
     - offset 是起始行号（从 1 开始），limit 是最多读取的行数
     - 内容过长时只保留开头，并在末尾提示下次该用哪个 offset
@@ -22,8 +23,8 @@ async def read(path: str, offset: int = 1, limit: int = MAX_LINES) -> str:
     - 返回的行号前缀仅供定位，不要写进 edit 的匹配文本里
     """
     try:
-        target = resolve_path(path)
-    except ValueError as exc:
+        target = guard_path(path, READ)
+    except SandboxDenied as exc:
         return str(exc)
 
     if not target.exists():

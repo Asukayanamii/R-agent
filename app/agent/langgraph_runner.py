@@ -6,6 +6,7 @@
 """
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
@@ -13,11 +14,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_config
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import tools_condition
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel
 
+from app.agent.runtime import current_workspace
 from app.agent.tools import APPROVAL_REQUIRED, TOOLS
 from app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from app.event.events import (
@@ -39,9 +42,10 @@ from app.event.events import (
 from app.models.entities import ThreadRecord
 
 SYSTEM_PROMPT = (
-    "你是一个在项目目录下工作的编程助手。"
-    "bash 工具的工作目录就是项目根目录。"
-    "需要查看代码、跑测试或执行命令时用 bash，不要编造命令输出。"
+    "你是一个在用户指定工作区里干活的编程助手。"
+    "bash 与文件类工具的工作目录都是当前工作区根目录；"
+    "工作区之外的位置需要用户授权才能访问。"
+    "需要查看代码、跑测试或执行命令时用工具，不要编造工具返回的内容。"
     "回答用中文，简洁准确。"
 )
 
@@ -64,6 +68,18 @@ def _text_of(message: object) -> str:
     return ""
 
 
+def _workspace_token(config: dict):
+    """
+    把本次运行的工作区放进 ContextVar，供沙箱判定信任边界。
+
+    RunnableConfig 是 LangGraph 给"每次调用的参数"准备的位置，不自造 state 字段。
+    """
+    workspace = (config.get("configurable") or {}).get("workspace")
+    if not workspace:
+        return None
+    return current_workspace.set(Path(workspace))
+
+
 async def _run_tools(state: MessagesState):
     """
     逐个征求人工确认，然后只执行通过的调用。
@@ -71,6 +87,10 @@ async def _run_tools(state: MessagesState):
     不用 ToolNode 的原因：它会执行 AIMessage 里的全部调用（含已被回绝的），
     并产生重复 tool_call_id 的 ToolMessage，审批拒绝因此形同虚设。
     这里统一承担审批与执行，单一执行路径。
+
+    注意 `except GraphBubbleUp: raise` 不能删。interrupt() 抛的就是它，
+    被 except Exception 接住的话，工具内部的沙箱授权询问会退化成一条
+    "工具执行失败"——静默失效，而且很难查。
     """
     config = get_config()
     calls = state["messages"][-1].tool_calls
@@ -87,35 +107,45 @@ async def _run_tools(state: MessagesState):
             approved[call["id"]] = decision == "确认"
 
     results = []
-    for call in calls:
-        if not approved.get(call["id"], True):
-            results.append(
-                ToolMessage(content=REJECT_MESSAGE, tool_call_id=call["id"])
-            )
-            continue
-
-        tool = TOOL_MAP.get(call["name"])
-        if tool is None:
-            results.append(
-                ToolMessage(
-                    content=f"未知工具：{call['name']}",
-                    tool_call_id=call["id"],
-                    status="error",
+    token = _workspace_token(config)
+    try:
+        for call in calls:
+            if not approved.get(call["id"], True):
+                results.append(
+                    ToolMessage(content=REJECT_MESSAGE, tool_call_id=call["id"])
                 )
-            )
-            continue
+                continue
 
-        try:
-            output = await tool.ainvoke(call["args"], config=config)
-            results.append(ToolMessage(content=str(output), tool_call_id=call["id"]))
-        except Exception as exc:
-            results.append(
-                ToolMessage(
-                    content=f"工具执行失败：{exc}",
-                    tool_call_id=call["id"],
-                    status="error",
+            tool = TOOL_MAP.get(call["name"])
+            if tool is None:
+                results.append(
+                    ToolMessage(
+                        content=f"未知工具：{call['name']}",
+                        tool_call_id=call["id"],
+                        status="error",
+                    )
                 )
-            )
+                continue
+
+            try:
+                output = await tool.ainvoke(call["args"], config=config)
+            except GraphBubbleUp:
+                raise
+            except Exception as exc:
+                results.append(
+                    ToolMessage(
+                        content=f"工具执行失败：{exc}",
+                        tool_call_id=call["id"],
+                        status="error",
+                    )
+                )
+            else:
+                results.append(
+                    ToolMessage(content=str(output), tool_call_id=call["id"])
+                )
+    finally:
+        if token is not None:
+            current_workspace.reset(token)
 
     return {"messages": results}
 
@@ -160,23 +190,30 @@ class LangGraphRunner:
         self.graph = build_graph(checkpointer, model)
 
     @staticmethod
-    def _config(thread_id: str) -> dict:
-        return {"configurable": {"thread_id": thread_id}}
+    def _config(thread_id: str, workspace: str | None = None) -> dict:
+        configurable: dict = {"thread_id": thread_id}
+        if workspace:
+            configurable["workspace"] = workspace
+        return {"configurable": configurable}
 
-    async def stream(self, thread_id: str, message: str) -> AsyncIterator[BaseModel]:
+    async def stream(
+        self, thread_id: str, message: str, workspace: str | None = None
+    ) -> AsyncIterator[BaseModel]:
         inputs = {"messages": [HumanMessage(content=message)]}
-        async for event in self._run(thread_id, inputs):
+        async for event in self._run(thread_id, workspace, inputs):
             yield event
 
-    async def resume(self, thread_id: str, value: str) -> AsyncIterator[BaseModel]:
-        config = self._config(thread_id)
+    async def resume(
+        self, thread_id: str, value: str, workspace: str | None = None
+    ) -> AsyncIterator[BaseModel]:
+        config = self._config(thread_id, workspace)
         snapshot = await self.graph.aget_state(config)
         if not snapshot.interrupts:
             yield ErrorEvent(
                 data=ErrorData(message="该会话没有待确认的操作，无需 resume")
             )
             return
-        async for event in self._run(thread_id, Command(resume=value)):
+        async for event in self._run(thread_id, workspace, Command(resume=value)):
             yield event
 
     async def history(self, thread_id: str) -> list[HistoryMessage]:
@@ -268,8 +305,10 @@ class LangGraphRunner:
             )
         return result
 
-    async def _run(self, thread_id: str, inputs: object) -> AsyncIterator[BaseModel]:
-        config = self._config(thread_id)
+    async def _run(
+        self, thread_id: str, workspace: str | None, inputs: object
+    ) -> AsyncIterator[BaseModel]:
+        config = self._config(thread_id, workspace)
         usage = Usage()
         message_id = ""
 

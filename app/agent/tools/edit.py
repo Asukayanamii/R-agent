@@ -2,7 +2,9 @@
 
 from langchain_core.tools import tool
 
-from app.agent.tools.common import rel, resolve_path
+from app.agent.sandbox import WRITE, guard_path
+from app.agent.tools.common import rel
+from app.exceptions import SandboxDenied
 
 
 def fuzzy_span(lines: list[str], wanted: list[str]) -> tuple[int, int] | None:
@@ -41,8 +43,8 @@ async def edit(
         return "old_string 不能为空"
 
     try:
-        target = resolve_path(path)
-    except ValueError as exc:
+        target = guard_path(path, WRITE)
+    except SandboxDenied as exc:
         return str(exc)
 
     if not target.is_file():

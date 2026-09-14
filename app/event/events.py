@@ -90,6 +90,7 @@ class ThreadSummary(BaseModel):
     title: str = Field(..., description="取首条用户消息，为空时退化为 thread_id 前缀")
     updated_at: str = Field("", description="最近一次检查点时间戳")
     pending: bool = Field(False, description="是否有待人工确认的操作")
+    workspace: str = Field("", description="该会话的工作区；为空表示用应用所在目录")
 
 
 class ThreadEvent(BaseModel):

@@ -4,7 +4,9 @@ from datetime import datetime
 
 from langchain_core.tools import tool
 
-from app.agent.tools.common import MAX_LINES, rel, resolve_path
+from app.agent.sandbox import READ, guard_path
+from app.agent.tools.common import MAX_LINES, rel
+from app.exceptions import SandboxDenied
 
 
 @tool
@@ -12,12 +14,12 @@ async def ls(path: str = ".") -> str:
     """
     列出目录内容，目录在前，附带文件大小与修改时间。
 
-    - path 省略时列出项目根目录
+    - path 省略时列出工作区根目录
     - 条目过多时截断
     """
     try:
-        target = resolve_path(path)
-    except ValueError as exc:
+        target = guard_path(path, READ)
+    except SandboxDenied as exc:
         return str(exc)
 
     if not target.exists():

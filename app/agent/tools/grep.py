@@ -5,7 +5,9 @@ import re
 
 from langchain_core.tools import tool
 
-from app.agent.tools.common import looks_binary, rel, resolve_path, walk_files
+from app.agent.sandbox import READ, guard_path
+from app.agent.tools.common import looks_binary, rel, walk_files
+from app.exceptions import SandboxDenied
 
 
 @tool
@@ -32,8 +34,8 @@ async def grep(
         return f"正则无效：{exc}"
 
     try:
-        target = resolve_path(path)
-    except ValueError as exc:
+        target = guard_path(path, READ)
+    except SandboxDenied as exc:
         return str(exc)
     if not target.exists():
         return f"路径不存在：{rel(target)}"

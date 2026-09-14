@@ -7,12 +7,16 @@
 
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from pathlib import Path
+import sys
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 from app.agent.runner import AgentRunner
+from app.config import PROJECT_ROOT
 from app.dao.thread_index_dao import ThreadIndexDao
+from app.exceptions import InvalidInput
 from app.event.events import (
     ErrorData,
     ErrorEvent,
@@ -62,14 +66,99 @@ class ChatService:
             )
             return
 
-        async for event in self._runner.stream(thread_id=thread_id, message=message):
+        async for event in self._runner.stream(
+            thread_id=thread_id,
+            message=message,
+            workspace=await self._workspace(thread_id),
+        ):
             yield event
         await self._record(thread_id, title=message)
 
     async def resume(self, thread_id: str, value: str) -> AsyncIterator[BaseModel]:
-        async for event in self._runner.resume(thread_id=thread_id, value=value):
+        async for event in self._runner.resume(
+            thread_id=thread_id,
+            value=value,
+            workspace=await self._workspace(thread_id),
+        ):
             yield event
         await self._record(thread_id, title="")
+
+    async def _workspace(self, thread_id: str) -> str | None:
+        """该会话的工作区。没设过则返回 None，由沙箱退回应用所在目录。"""
+        return await self._index.get_workspace(thread_id) or None
+
+    def browse(self, path: str) -> dict:
+        """
+        列出目录，供前端挑选工作区。
+
+        **这一步刻意不受沙箱约束**：沙箱限制的是 agent，不是用户。
+        用户本来就能在自己机器上任意选目录，拦它没有意义。
+
+        代价是它成为一个可以列举任意目录的接口。本地单用户部署没问题，
+        但要是把 API 暴露出去，这个接口必须先加鉴权或去掉。
+        """
+        if not path.strip():
+            return {"path": "", "parent": None, "dirs": self._start_points()}
+
+        target = Path(path.strip()).expanduser()
+        try:
+            target = target.resolve()
+        except OSError as exc:
+            raise InvalidInput(f"无法解析路径：{exc}") from exc
+
+        if not target.is_dir():
+            raise InvalidInput(f"不是目录：{target.as_posix()}")
+
+        entries = []
+        try:
+            for item in sorted(target.iterdir(), key=lambda p: p.name.lower()):
+                try:
+                    if item.is_dir():
+                        entries.append({"name": item.name, "path": item.as_posix()})
+                except OSError:
+                    continue
+        except PermissionError as exc:
+            raise InvalidInput(f"没有权限读取：{target.as_posix()}") from exc
+
+        parent = target.parent
+        return {
+            "path": target.as_posix(),
+            "parent": None if parent == target else parent.as_posix(),
+            "dirs": entries,
+        }
+
+    @staticmethod
+    def _start_points() -> list[dict]:
+        """没给路径时给出的起点：用户目录 + 各盘符（Windows）。"""
+        points = [{"name": f"~ {Path.home().name}", "path": Path.home().as_posix()}]
+        if sys.platform == "win32":
+            for letter in "CDEFGH":
+                drive = Path(f"{letter}:/")
+                if drive.exists():
+                    points.append({"name": drive.as_posix(), "path": drive.as_posix()})
+        else:
+            points.append({"name": "/", "path": "/"})
+        return points
+
+    async def set_workspace(self, thread_id: str, path: str) -> str:
+        """
+        设置会话的工作区。
+
+        工作区就是沙箱的信任边界，**只能由用户指定**——agent 若能改自己的边界，
+        边界就不存在了。所以这个方法只应该被用户触发的接口调用。
+        """
+        target = Path(path.strip() or ".").expanduser()
+        if not target.is_absolute():
+            target = PROJECT_ROOT / target
+        target = target.resolve()
+
+        if not target.exists():
+            raise InvalidInput(f"路径不存在：{target.as_posix()}")
+        if not target.is_dir():
+            raise InvalidInput(f"不是目录：{target.as_posix()}")
+
+        await self._index.set_workspace(thread_id, target.as_posix())
+        return target.as_posix()
 
     async def _record(self, thread_id: str, title: str) -> None:
         """
@@ -108,6 +197,7 @@ class ChatService:
                 title=record.title or record.thread_id[:12],
                 updated_at=record.updated_at,
                 pending=record.pending,
+                workspace=record.workspace,
             )
             for record in records
         ]

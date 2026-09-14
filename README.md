@@ -41,6 +41,10 @@ app/models/       领域实体    ThreadRecord，供 dao 与 agent 共用
   连接何时开关，都属于应用装配，不放进任何一层。
 - **`app/event/` 是协议模型**（wire format，含 `ThreadSummary` 等 DTO），
   下层不 import 它；dao 只认 `app/models/entities.py` 里的领域实体。
+- **`app/exceptions/` 放自定义异常**：`SandboxDenied` 由沙箱抛出、六个文件工具捕获后
+  作为工具结果返回；`InvalidInput` 由业务层抛出、表现层捕获后转成 `Result.fail`。
+  都继承 `ValueError`，因为语义上就是"传进来的值不可接受"。代码直接放 `__init__.py`，
+  不再套一层同名模块——那会变成 `from app.exceptions.exceptions import ...`。
 - **checkpointer 不单独抽 DAO**：那是 LangGraph 自己的存储，通过 LangGraph 的 API 访问，
   不是我们写的 SQL。只为我们自己拥有的表写 DAO。
 - 改某层的实现不需要动其他层：换存储动 `container.py`，换业务规则动 `service/`，
@@ -78,6 +82,8 @@ python -m uvicorn app.main:app --reload --port 8000
 | POST | `/chat/resume` | 带着用户选择，从 `interrupt` 处继续，SSE 流 |
 | GET | `/chat/history` | 读取既有会话消息，供前端恢复。走 `Result` 包装 |
 | GET | `/chat/threads` | 列出既有会话，按最近更新倒序。走 `Result` 包装 |
+| PUT | `/chat/workspace` | 设置会话的工作区，也就是沙箱的信任边界 |
+| GET | `/chat/browse` | 列出目录，供挑选工作区。**刻意不受沙箱约束** |
 
 > **会话列表为什么放在服务端**：`localStorage` 按 origin（含端口）隔离，而桌面端
 > 每次启动都随机挑端口，origin 随之改变，前端自持的会话清单重启后必然是空的——
@@ -133,9 +139,65 @@ python -m uvicorn app.main:app --reload --port 8000
 | `bash` | 执行命令 | 见下 |
 | `get_current_time` | 取当前时间 | 八种格式（`iso` 默认 / `timestamp` / `date` / `time` / `human` / `cn` / `rfc` / `full`），支持 IANA 命名时区 |
 
-**六个文件工具共用的安全属性**：所有路径都经 `common.resolve_path` 解析并
-**限制在项目根之下**，`../../` 或指向外部的绝对路径一律拒绝。模型给的路径可能来自
-它读进来的不可信内容（文件、命令输出），不拦就等于把整个磁盘交出去。
+### 工作区
+
+**信任边界是工作区**，不是会话。同一个工作区的所有对话共享同一份沙箱授权；
+换工作区就是换了一层边界。不设工作区时，退回应用所在目录。
+
+默认工作区就是本仓库，所以想让它去改别的项目，得先在工作区选择器里指过去
+（`GET /chat/browse` + `PUT /chat/workspace`）。选择器在页头，点工作区名字就展开。
+
+`bash` 的 cwd 与六个文件工具的路径基准**都是工作区根目录**——两边必须一致，
+否则 agent 会看到两个不同的"当前目录"。
+
+**只有用户能改工作区**。agent 若能改自己的边界，边界就不存在了。
+
+> `GET /chat/browse` 可以列举任意目录，这是刻意的：沙箱限制的是 agent，不是用户。
+> 本地单用户部署没问题，但若要把 API 暴露出去，**必须先给它加鉴权或删掉**。
+
+### 路径沙箱
+
+六个文件工具的路径都过 `app/agent/sandbox.py` 的守卫，三种结果：
+
+| 情况 | 行为 |
+| --- | --- |
+| 工作区内、未命中禁区 | 直接放行 |
+| 命中绝对禁区 | **硬阻断，永不提示** |
+| 工作区之外 | **弹确认卡片询问**，四个选项 |
+
+绝对禁区包括 `.env`、`*.pem`、`*.key`、`*id_rsa*`、`.git/`、`data/`。
+`data/` 同时进读写列表是刻意的——那是应用自己的会话库，**能读就能 grep 出别的会话内容**；
+`.git/` 同理，`config` 里的 remote URL 可能带 token。
+
+读写列表不完全相同：读不含 `.env.*`（`.env.example` 这类模板该能读），写则包含。
+
+**询问时的四个选项**，对应三层授权来源：
+
+| 选项 | 存哪 | 生效范围 |
+| --- | --- | --- |
+| 拒绝 | 不存 | — |
+| 允许（本次运行有效） | 内存 | 本工作区，进程重启即失效 |
+| 记住（仅此工作区） | `<工作区>/.my_agent/sandbox.json` | 本工作区，持久 |
+| 记住（所有工作区） | `~/.my_agent/sandbox.json` | 所有工作区，持久 |
+
+授权粒度是**被问到的那一个路径本身**：同意一个文件不等于同意整个目录；
+被拒绝的路径不会产生任何授权。授权 **agent 读不到也改不了**——边界必须对 agent 不透明，
+否则它会学着去探测它。
+
+> **工作区级的授权文件写在你的项目里**（`.my_agent/sandbox.json`）。这是照 pi-sandbox
+> 的做法（它写 `.pi/sandbox.json`），好处是授权跟着项目走。但里面存的是**本机绝对路径**，
+> 提交给别人没有意义，所以它在 `.gitignore` 里。
+
+> 副作用：授权是**进程级**的，同一进程内所有用户共享。当前是本地单用户部署不成问题；
+> 将来要支持多用户，key 得从工作区改成 `(用户, 工作区)`。
+
+> **bash 不受沙箱约束。** 它的 cwd 跟随工作区，但 shell 一条 `cd /` 就出去了——
+> 进程内检查对它无效。真隔离只能来自操作系统或容器。
+> 别把上面的限制当成覆盖 bash 的安全边界。
+
+> **改 `_run_tools` 时注意**：必须保留 `except GraphBubbleUp: raise`。
+> `interrupt()` 抛的就是它，被 `except Exception` 接住的话，
+> 工具内部的授权询问会退化成一条"工具执行失败"。这条是实测确认过的。
 
 **输出统一有上限**（50KB / 2000 行）。`read` 保留**开头**并提示续读位置；
 `bash` / `grep` / `find` / `ls` 保留**尾部或计数**——排错时最近的输出更有用。

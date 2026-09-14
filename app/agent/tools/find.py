@@ -4,21 +4,23 @@ import fnmatch
 
 from langchain_core.tools import tool
 
-from app.agent.tools.common import rel, resolve_path, walk_files
+from app.agent.sandbox import READ, guard_path
+from app.agent.tools.common import rel, walk_files
+from app.exceptions import SandboxDenied
 
 
 @tool
 async def find(pattern: str, path: str = ".", max_results: int = 200) -> str:
     """
-    按 glob 匹配查找文件，返回相对项目根的路径。
+    按 glob 匹配查找文件，返回相对工作区的路径。
 
     - pattern 里的 * 可以跨目录，所以 "*.py" 会匹配任意层级的 py 文件
     - path 限定搜索起点
     - 结果按路径排序，超过 max_results 时截断
     """
     try:
-        target = resolve_path(path)
-    except ValueError as exc:
+        target = guard_path(path, READ)
+    except SandboxDenied as exc:
         return str(exc)
     if not target.exists():
         return f"路径不存在：{rel(target)}"

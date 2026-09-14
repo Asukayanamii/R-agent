@@ -14,6 +14,7 @@ from app.event.events import (
     ThreadSummary,
 )
 from app.event.stream import SSE_HEADERS, SSE_MEDIA_TYPE, sse_stream
+from app.exceptions import InvalidInput
 from app.result.result import Result
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -53,6 +54,29 @@ class ChatRequest(BaseModel):
 class ResumeRequest(BaseModel):
     thread_id: str = Field(..., description="会话 ID，来自 interrupt 所在的同一次会话")
     value: str = Field(..., min_length=1, description="用户对 interrupt 的选择")
+
+
+class WorkspaceRequest(BaseModel):
+    thread_id: str = Field(..., description="会话 ID")
+    path: str = Field(
+        ..., min_length=1, description="工作区目录。绝对路径，或相对应用目录的路径"
+    )
+
+
+class WorkspaceResponse(BaseModel):
+    thread_id: str
+    workspace: str
+
+
+class BrowseEntry(BaseModel):
+    name: str
+    path: str
+
+
+class BrowseResponse(BaseModel):
+    path: str
+    parent: str | None
+    dirs: list[BrowseEntry]
 
 
 class HistoryResponse(BaseModel):
@@ -122,6 +146,45 @@ async def chat_history(
     return Result.success(
         data=HistoryResponse(thread_id=thread_id, messages=messages, pending=pending)
     )
+
+
+@router.put(
+    "/workspace",
+    summary="设置会话的工作区",
+    description=(
+        "工作区是沙箱的信任边界：工具能自由访问工作区内的路径，越界会弹确认卡片。"
+        "同一工作区下的所有对话共享同一份沙箱授权。\n\n"
+        "**只有用户能改它**——agent 若能改自己的边界，边界就不存在了。"
+    ),
+)
+async def chat_set_workspace(payload: WorkspaceRequest) -> Result[WorkspaceResponse]:
+    try:
+        resolved = await get_service().set_workspace(payload.thread_id, payload.path)
+    except InvalidInput as exc:
+        return Result.fail(message=str(exc))
+    return Result.success(
+        data=WorkspaceResponse(thread_id=payload.thread_id, workspace=resolved)
+    )
+
+
+@router.get(
+    "/browse",
+    summary="列出目录（供挑选工作区）",
+    description=(
+        "**刻意不受沙箱约束**——沙箱限制的是 agent，不是用户；"
+        "用户本来就能在自己机器上任意选目录。\n\n"
+        "代价是它成为一个可列举任意目录的接口。本地单用户部署没问题，"
+        "若要把 API 暴露出去，必须先加鉴权或去掉它。"
+    ),
+)
+async def chat_browse(
+    path: str = Query("", description="要列出的目录；留空则返回用户目录与各盘符"),
+) -> Result[BrowseResponse]:
+    try:
+        data = get_service().browse(path)
+    except InvalidInput as exc:
+        return Result.fail(message=str(exc))
+    return Result.success(data=BrowseResponse(**data))
 
 
 @router.get(
