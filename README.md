@@ -118,9 +118,26 @@ python -m uvicorn app.main:app --reload --port 8000
 前端只需 `switch (type)`，未知 type 静默忽略，后端新增事件不会影响已上线前端。
 `error` 与 `done` 由 `app/event/stream.py` 统一收口，实现类无需产出。
 
+## 工具
+
+目前只有一个 `bash`，实现在 `app/agent/tools/bash.py`，设计参考 Pi（earendil-works/pi）
+等开源 coding agent 的做法：
+
+- **流式读取输出**，不等进程结束。这样命令超时被 kill 时，它此前打出的内容照样能拿回来
+- **内存有滚动上限**（1MB），命令可能吐几个 G，超出的从头部丢弃并计数
+- **最终输出再截断一次**（50KB / 2000 行），保留**尾部**——排错时最近的输出更有用
+- **截断会明确告知模型丢了多少行/字节**，否则它会反复执行同一条命令
+- **清洗 ANSI 转义与控制字符**，避免污染上下文
+- **超时按进程树终止**（Windows 用 `taskkill /T`，POSIX 用进程组），只杀 shell 会把子进程留在后台
+- **不接 stdin**，交互式命令会一直等输入；让它直接失败好过挂住
+- **Windows 上优先用 Git Bash**（自动找 `C:\Program Files\Git\bin\bash.exe`），
+  因为模型的命令是照 bash 语义写的，落到 cmd.exe 会到处不认
+
 ## 人工确认（Human-in-the-loop）
 
-`app/agent/tools.py` 里 `APPROVAL_REQUIRED` 集合内的工具，执行前**逐个**征求确认：
+`app/agent/tools/__init__.py` 里 `APPROVAL_REQUIRED` 集合内的工具，执行前**逐个**征求确认。
+**它目前是空的**——编码场景下每次执行命令都要点确认会很烦，所以默认不拦。
+把 `"bash"` 加进去即可启用。
 
 ```
 agent → tools（审批 + 执行） → agent
@@ -230,8 +247,8 @@ curl -N -sS -X POST http://127.0.0.1:8000/chat/stream \
 
 | 要改什么 | 改哪里 |
 | --- | --- |
-| 加工具 | `app/agent/tools.py` 的 `TOOLS` 列表 |
-| 加需审批的工具 | 把工具名加入同文件的 `APPROVAL_REQUIRED` |
+| 加工具 | `app/agent/tools/` 下新建一个文件，在 `__init__.py` 的 `TOOLS` 里注册 |
+| 加需审批的工具 | 把工具名加进同文件的 `APPROVAL_REQUIRED`，例如 `{"bash"}` |
 | 换存储 | `app/agent/__init__.py` 里换 checkpointer（`AsyncSqliteSaver` / `AsyncPostgresSaver` / 自定义） |
 | 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在 `app/agent/__init__.py` 的工厂里替换 |
 | 换事件类型 | `app/event/events.py`，前端同步加一个 `case` |
