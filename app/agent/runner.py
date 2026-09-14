@@ -93,6 +93,18 @@ class AgentRunner(Protocol):
         """
         ...
 
+    async def repair_after_abort(self, thread_id: str) -> int:
+        """
+        一轮被中断（用户点了停止、连接断了、进程被关）之后，把状态修回"可继续"。
+
+        中断可能停在"模型已经要求调工具、工具还没回结果"的位置，那种悬空调用对 provider
+        而言是非法历史，下一次发消息会被拒。这里给缺结果的调用补一条"已中断"的回复，
+        返回补了几条。
+
+        **停在待确认（interrupt）上的会话不能动**——那是合法状态，用户点确认就能继续。
+        """
+        ...
+
     async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
         """
         从存储里枚举会话快照，供业务层回填索引。
@@ -130,6 +142,10 @@ class StubRunner:
 
     async def has_dangling_tool_calls(self, thread_id: str) -> bool:
         return False
+
+    async def repair_after_abort(self, thread_id: str) -> int:
+        """内存实现没有"悬空调用"这回事：中断即忘。"""
+        return 0
 
     async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
         items = list(self._history.items())[-limit:]

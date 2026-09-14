@@ -5,6 +5,7 @@
 只负责"一轮对话之后要记录什么"这类业务规则。
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -22,8 +23,6 @@ from app.exceptions import InvalidInput
 from app.event.events import (
     BrowseEntry,
     BrowseResponse,
-    ErrorData,
-    ErrorEvent,
     HistoryMessage,
     InterruptData,
     InterruptEvent,
@@ -34,6 +33,9 @@ from app.event.events import (
 from app.models.entities import ThreadRecord, WorkspaceRecord
 
 logger = logging.getLogger(__name__)
+
+# 中断收尾任务的强引用：fire-and-forget 的任务可能被 GC 掉，得自己拿着
+_settle_tasks: set[asyncio.Task] = set()
 
 
 class ChatService:
@@ -68,12 +70,11 @@ class ChatService:
             return
 
         if await self._runner.has_dangling_tool_calls(thread_id):
-            yield ErrorEvent(
-                data=ErrorData(
-                    message="该会话有未完成的工具调用，无法继续，请点击「新对话」开始"
-                )
-            )
-            return
+            # 上一轮被中断（用户停止、连接断开、进程被关）会留下没人回应的工具调用，
+            # provider 会直接拒掉下一次请求。先补一条"已中断"的结果，会话就还能接着用——
+            # **中断之后不追究是谁导致的**，手动停止与意外断开是同一种状态、同一套修复。
+            fixed = await self._runner.repair_after_abort(thread_id)
+            logger.info("会话有悬空调用，补 %d 条后继续 thread=%s", fixed, thread_id)
 
         workspace = await self._workspace(thread_id)
         logger.info(
@@ -82,10 +83,14 @@ class ChatService:
             len(message),
             workspace or "应用目录",
         )
-        async for event in self._runner.stream(
-            thread_id=thread_id, message=message, workspace=workspace
-        ):
-            yield event
+        try:
+            async for event in self._runner.stream(
+                thread_id=thread_id, message=message, workspace=workspace
+            ):
+                yield event
+        except asyncio.CancelledError:
+            self._schedule_settle(thread_id, title=message)
+            raise
         await self._record(thread_id, title=message)
 
     async def resume(self, thread_id: str, value: str) -> AsyncIterator[BaseModel]:
@@ -96,11 +101,35 @@ class ChatService:
             value,
             workspace or "应用目录",
         )
-        async for event in self._runner.resume(
-            thread_id=thread_id, value=value, workspace=workspace
-        ):
-            yield event
+        try:
+            async for event in self._runner.resume(
+                thread_id=thread_id, value=value, workspace=workspace
+            ):
+                yield event
+        except asyncio.CancelledError:
+            self._schedule_settle(thread_id, title="")
+            raise
         await self._record(thread_id, title="")
+
+    def _schedule_settle(self, thread_id: str, title: str) -> None:
+        """
+        一轮被中断后的收尾：补索引行 + 修掉悬空调用。
+
+        **丢进独立任务，不在取消路径上 await**：取消已经落在当前任务上了，原地 await
+        可能被第二次取消打断；独立任务能跑完。手动停止、连接断开、进程被关都走这里。
+        """
+        task = asyncio.create_task(self._settle_aborted(thread_id, title))
+        _settle_tasks.add(task)
+        task.add_done_callback(_settle_tasks.discard)
+
+    async def _settle_aborted(self, thread_id: str, title: str) -> None:
+        try:
+            repaired = await self._runner.repair_after_abort(thread_id)
+            # 标题照常记：首轮就被中断的新会话也要以那句话出现在列表里
+            await self._record(thread_id, title=title)
+            logger.info("本轮被中断 thread=%s 已修复悬空调用 %d 个", thread_id, repaired)
+        except Exception:
+            logger.exception("中断后的收尾失败 thread=%s", thread_id)
 
     async def _workspace(self, thread_id: str) -> str | None:
         """该会话的工作区。没绑过则返回 None，由沙箱退回应用所在目录。"""

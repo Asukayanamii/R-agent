@@ -61,6 +61,8 @@ TOOL_MAP = {tool.name: tool for tool in TOOLS}
 
 REJECT_MESSAGE = "用户拒绝执行该操作。"
 
+INTERRUPTED_MESSAGE = "这一轮被中断，未取得结果。"
+
 NO_MODEL_REASON = (
     "未配置 LLM_API_KEY，无法对话。"
     "在项目根目录的 .env 里填上 key（可参考 .env.example），重启应用后即可使用。"
@@ -105,6 +107,23 @@ def _brief(value: object, limit: int = 200) -> str:
     """日志用：压成一行并截断——工具参数与返回值可能是很长的字典或多行文本。"""
     text = " ".join(str(value).split())
     return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _unanswered_calls(messages: list) -> list[dict]:
+    """
+    收集"没人回应的 tool_calls"。
+
+    provider 对历史的要求是每个 tool_use 都有配对的 tool_result，所以这些调用会让**下一次
+    请求直接 400**——修好之前，这个会话对模型来说是不可继续的。
+    """
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    return [
+        call
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+        if call["id"] not in answered
+    ]
 
 
 def _error_message(call_id: str, text: str) -> ToolMessage:
@@ -422,16 +441,42 @@ class LangGraphRunner:
 
     async def has_dangling_tool_calls(self, thread_id: str) -> bool:
         snapshot = await self.graph.aget_state(self._config(thread_id))
-        messages = snapshot.values.get("messages", [])
-        answered = {
-            m.tool_call_id for m in messages if isinstance(m, ToolMessage)
-        }
-        return any(
-            call["id"] not in answered
-            for message in messages
-            if isinstance(message, AIMessage)
-            for call in message.tool_calls
+        return bool(_unanswered_calls(snapshot.values.get("messages", [])))
+
+    async def repair_after_abort(self, thread_id: str) -> int:
+        """
+        一轮被中断后把状态修回"可继续"。
+
+        用 `aupdate_state(..., as_node="tools")` 补上"已中断"的 ToolMessage，等于告诉
+        LangGraph 这些调用有结果了：消息链重新合法，下一次发消息照常从 agent 走。
+
+        停在待确认（interrupt）上的会话**不动**——那是合法状态，点确认就能继续。
+        """
+        config = self._config(thread_id)
+        snapshot = await self.graph.aget_state(config)
+        if snapshot.interrupts:
+            return 0
+
+        calls = _unanswered_calls(snapshot.values.get("messages", []))
+        if not calls:
+            return 0
+
+        await self.graph.aupdate_state(
+            config,
+            {
+                "messages": [
+                    ToolMessage(
+                        content=INTERRUPTED_MESSAGE,
+                        tool_call_id=call["id"],
+                        status="error",
+                    )
+                    for call in calls
+                ]
+            },
+            as_node="tools",
         )
+        logger.info("补齐被中断的调用 thread=%s 条数=%d", thread_id, len(calls))
+        return len(calls)
 
     async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
         """

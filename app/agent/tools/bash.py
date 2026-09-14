@@ -150,6 +150,10 @@ async def bash(command: str, timeout_sec: int = DEFAULT_TIMEOUT) -> str:
             await asyncio.wait_for(proc.wait(), timeout=5)
         except asyncio.TimeoutError:
             pass
+    except asyncio.CancelledError:
+        # 被取消（用户点了停止、连接断开）也要收干净：否则"停止"之后命令还在后台跑。
+        kill_tree(proc)
+        raise
 
     await reader
 
