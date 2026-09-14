@@ -83,12 +83,34 @@ class DoneData(BaseModel):
 # 请求体不在这一层：它是入站的 HTTP 校验，见 app/api/chat.py。
 
 
+class HistoryToolCall(BaseModel):
+    """
+    历史里的一次工具调用。
+
+    调用与结果分开存（`AIMessage.tool_calls` 与按 `tool_call_id` 配对的 `ToolMessage`），
+    所以可能只有调用没有结果——停在待确认上、或者那一轮被中断了，这时 `state` 是 pending。
+    """
+
+    id: str = Field(..., description="调用 ID，与实时事件里的 tool_start 一致")
+    name: str = Field(..., description="工具名")
+    args: dict = Field(default_factory=dict, description="调用参数")
+    state: Literal["ok", "failed", "pending"] = Field(
+        "ok", description="完成 / 失败 / 未完成（可能停在待确认上）"
+    )
+    result: str | None = Field(None, description="成功时的返回值")
+    error: str | None = Field(None, description="失败或未完成的原因")
+
+
 class HistoryMessage(BaseModel):
     """历史消息，用于前端恢复既有会话。"""
 
     role: str = Field(..., description="user 或 assistant")
     content: str
     id: str | None = None
+    tool_calls: list[HistoryToolCall] = Field(
+        default_factory=list,
+        description="assistant 消息在这轮里调过的工具，按发生顺序；渲染在正文上方",
+    )
 
 
 class WorkspaceInfo(BaseModel):

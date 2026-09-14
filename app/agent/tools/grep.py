@@ -6,7 +6,7 @@ import re
 from langchain_core.tools import tool
 
 from app.agent.sandbox import READ, guard_path
-from app.agent.tools.common import looks_binary, rel, walk_files
+from app.agent.tools.common import fail, looks_binary, rel, walk_files
 from app.exceptions import SandboxDenied
 
 
@@ -31,14 +31,14 @@ async def grep(
     try:
         regex = re.compile(pattern, flags)
     except re.error as exc:
-        return f"正则无效：{exc}"
+        fail(f"正则无效：{exc}")
 
     try:
         target = guard_path(path, READ)
     except SandboxDenied as exc:
-        return str(exc)
+        fail(str(exc))
     if not target.exists():
-        return f"路径不存在：{rel(target)}"
+        fail(f"路径不存在：{rel(target)}")
 
     candidates = [target] if target.is_file() else walk_files(target)
 

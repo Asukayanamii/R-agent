@@ -5,7 +5,7 @@ import fnmatch
 from langchain_core.tools import tool
 
 from app.agent.sandbox import READ, guard_path
-from app.agent.tools.common import rel, walk_files
+from app.agent.tools.common import fail, rel, walk_files
 from app.exceptions import SandboxDenied
 
 
@@ -21,9 +21,9 @@ async def find(pattern: str, path: str = ".", max_results: int = 200) -> str:
     try:
         target = guard_path(path, READ)
     except SandboxDenied as exc:
-        return str(exc)
+        fail(str(exc))
     if not target.exists():
-        return f"路径不存在：{rel(target)}"
+        fail(f"路径不存在：{rel(target)}")
 
     if target.is_file():
         found = [rel(target)] if fnmatch.fnmatch(target.name, pattern) else []

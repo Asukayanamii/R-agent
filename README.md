@@ -27,7 +27,7 @@ cp .env.example .env
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `LLM_API_KEY` | 无 | **没配就没法对话**：发消息会直接收到一条 `error` 事件说明原因（会话列表、浏览目录、删除会话照常可用） |
+| `LLM_API_KEY` | 无 | **没配就没法对话**：发消息会直接收到一条 `error` 事件说明原因。会话列表、历史、浏览目录、删除会话都不依赖模型，照常可用 |
 | `LLM_BASE_URL` | `https://api.deepseek.com/v1` | 百炼填 `https://dashscope.aliyuncs.com/compatible-mode/v1`，Ollama 填 `http://localhost:11434/v1` |
 | `LLM_MODEL` | `deepseek-chat` | 百炼可用 `qwen-plus`，Ollama 可用 `qwen3:8b` |
 | `SQLITE_PATH` | `./data/checkpoints.db` | 会话状态落盘位置。相对路径按项目根解析，不受启动目录影响；留空则仅存于进程内存 |
@@ -81,7 +81,7 @@ python -m uvicorn app.main:app --reload --port 8000
 | --- | --- |
 | `thread` | 会话握手，携带 `thread_id`，必为第一帧 |
 | `text_delta` | 增量文本，累加即得完整回复 |
-| `tool_start` / `tool_end` | 工具调用，通过 `id` 配对 |
+| `tool_start` / `tool_end` | 工具调用，通过 `id` 配对。**工具抛异常时也会补一帧 `tool_end`（`ok=false`）**——LangGraph 那时只发 `on_tool_error`，不补的话卡片会一直停在"运行中" |
 | `interrupt` | 需人工确认，前端渲染确认 UI 后调 `/chat/resume` |
 | `message_end` | 本条消息结束，携带 `message_id` 与 `usage` |
 | `error` | 出错，`code` 与 `Result` 语义一致 |
@@ -92,7 +92,8 @@ python -m uvicorn app.main:app --reload --port 8000
 
 两个前端实现时要知道的约定：**多调用时中断逐个出现**，每次 `resume` 解决一个、
 响应里会带出下一个 `interrupt`；**同一节点的多个 interrupt 复用同一个 id**，
-所以不能用 id 给卡片去重。
+所以不能用 id 给卡片去重。**等确认的工具不会再有 `tool_end`**（它停在那里等人点），
+前端收到 `interrupt` 时应当把这一轮里还没收尾的工具卡片标成"未完成"。
 
 ## 工具
 
@@ -112,6 +113,11 @@ python -m uvicorn app.main:app --reload --port 8000
 **所有工具的输出都有上限**（50KB / 2000 行）。`read` 保留开头并提示续读位置；
 `bash` / `grep` / `find` / `ls` 保留尾部或计数。截断时会**明确告知丢了多少**——
 不告诉模型的话它会反复执行同一条命令。
+
+**成功与失败靠返回值区分**：返回字符串 = 做成了（包括"没有匹配"这类空结果），
+`common.fail()` 抛 `ToolException` = 没做成（文件不存在、沙箱拒绝、命令非零退出、参数不合法……）。
+两者模型收到的话一样，区别在 `ToolMessage.status`——界面把卡片标成"失败"、
+历史恢复出来也还是"失败"，而不是含混的"完成"。
 
 ## 工作区
 

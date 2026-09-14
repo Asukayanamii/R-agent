@@ -29,7 +29,7 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1").strip()
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat").strip()
 
 # 显式启用桩实现（复读 + 演练工具卡片 / 人工确认），用于没有模型时调前端交互。
-# 它**不是**兜底：没配 key 时对话接口直接报错，见 app/agent/runner.py 的 UnconfiguredRunner。
+# 它**不是**兜底：没配 key 时对话接口直接报错，见 app/agent/langgraph_runner.py 的 _UnavailableModel。
 STUB_ENABLED = os.getenv("AGENT_STUB", "").strip() == "1"
 
 # 日志级别。约定见 README「日志」：ERROR 是需要人处理的失败，WARNING 是降级与拒绝，

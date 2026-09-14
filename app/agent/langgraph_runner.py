@@ -12,7 +12,9 @@ from time import monotonic
 from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatResult
+from langchain_core.tools import ToolException
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_config
@@ -25,10 +27,12 @@ from pydantic import BaseModel
 from app.agent.runtime import current_workspace
 from app.agent.tools import APPROVAL_REQUIRED, TOOLS
 from app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from app.exceptions import ModelUnavailable
 from app.event.events import (
     ErrorData,
     ErrorEvent,
     HistoryMessage,
+    HistoryToolCall,
     InterruptData,
     InterruptEvent,
     MessageEndData,
@@ -57,11 +61,85 @@ TOOL_MAP = {tool.name: tool for tool in TOOLS}
 
 REJECT_MESSAGE = "用户拒绝执行该操作。"
 
+NO_MODEL_REASON = (
+    "未配置 LLM_API_KEY，无法对话。"
+    "在项目根目录的 .env 里填上 key（可参考 .env.example），重启应用后即可使用。"
+)
+
+
+class _UnavailableModel(BaseChatModel):
+    """
+    没配 `LLM_API_KEY` 时的占位模型：一调用就抛，不假装能回答。
+
+    为什么只换模型、不换整个 runner：历史、待确认项、删除这些**读路径**都存在检查点里，
+    跟模型没关系。换个空实现的 runner 会把它们一起弄丢——打开旧会话一片空白。
+    """
+
+    @property
+    def _llm_type(self) -> str:
+        return "unavailable"
+
+    def bind_tools(self, tools: object, **kwargs: object) -> BaseChatModel:
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: object | None = None,
+        **kwargs: object,
+    ) -> ChatResult:
+        raise ModelUnavailable(NO_MODEL_REASON)
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: object | None = None,
+        **kwargs: object,
+    ) -> ChatResult:
+        raise ModelUnavailable(NO_MODEL_REASON)
+
 
 def _brief(value: object, limit: int = 200) -> str:
     """日志用：压成一行并截断——工具参数与返回值可能是很长的字典或多行文本。"""
     text = " ".join(str(value).split())
     return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _error_message(call_id: str, text: str) -> ToolMessage:
+    """
+    给模型的失败回执。
+
+    `status="error"` 是"失败"的唯一标记：前端卡片、历史恢复都读它。
+    """
+    return ToolMessage(content=text, tool_call_id=call_id, status="error")
+
+
+def _to_history_call(call: dict, result: object) -> HistoryToolCall:
+    """
+    把一次调用与它的结果配成历史里的一张工具卡片。
+
+    没有结果是正常情况：那一轮可能停在待确认上，或者流被中断了。
+    """
+    if result is None:
+        return HistoryToolCall(
+            id=call["id"],
+            name=call["name"],
+            args=call.get("args") or {},
+            state="pending",
+            error="未完成：可能停在待确认上",
+        )
+    text = _text_of(result)
+    failed = getattr(result, "status", None) == "error"
+    return HistoryToolCall(
+        id=call["id"],
+        name=call["name"],
+        args=call.get("args") or {},
+        state="failed" if failed else "ok",
+        result=None if failed else text,
+        error=text if failed else None,
+    )
 
 
 def _text_of(message: object) -> str:
@@ -144,16 +222,17 @@ async def _run_tools(state: MessagesState):
                 output = await tool.ainvoke(call["args"], config=config)
             except GraphBubbleUp:
                 raise
+            except ToolException as exc:
+                # 工具自己判定"没做成"（文件不存在、沙箱拒绝、命令非零退出……）。
+                # 这句话模型照旧收到，但打上 error 标记，界面与历史才显示"失败"。
+                # 不用 LangChain 的 handle_tool_error：它要靠运行时能取到 tool_call_id
+                # 才会把 status 包进 ToolMessage，而我们是手写执行路径（见下面注释）。
+                logger.warning("工具失败 name=%s：%s", call["name"], exc)
+                results.append(_error_message(call["id"], str(exc)))
             except Exception as exc:
-                # 工具自己报错不算致命：写成 ToolMessage 让模型看到并解释，日志留一条
-                logger.warning("工具执行失败 name=%s：%s", call["name"], exc)
-                results.append(
-                    ToolMessage(
-                        content=f"工具执行失败：{exc}",
-                        tool_call_id=call["id"],
-                        status="error",
-                    )
-                )
+                # 其余异常（参数校验失败、工具内部 bug）：同样是失败，标出是异常
+                logger.warning("工具异常 name=%s：%s", call["name"], exc)
+                results.append(_error_message(call["id"], f"工具执行失败：{exc}"))
             else:
                 results.append(
                     ToolMessage(content=str(output), tool_call_id=call["id"])
@@ -165,6 +244,19 @@ async def _run_tools(state: MessagesState):
     return {"messages": results}
 
 
+def _build_model() -> BaseChatModel:
+    """没配 key 就用占位模型：读路径照常，只有真去调模型时才报错。"""
+    if not LLM_API_KEY:
+        return _UnavailableModel()
+    return ChatOpenAI(
+        model=LLM_MODEL,
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        temperature=0,
+        streaming=True,  # 关掉流式就没有 text_delta，前端只能等整段回复
+    )
+
+
 def build_graph(checkpointer: BaseCheckpointSaver, model: BaseChatModel | None = None):
     """
     agent ↔ tools 循环，checkpointer 负责 thread_id 维度的多轮状态。
@@ -172,13 +264,7 @@ def build_graph(checkpointer: BaseCheckpointSaver, model: BaseChatModel | None =
     `tools_condition` 按最后一条 AI 消息里有没有 tool_calls 分流：有就去 tools 执行，
     没有就结束（END）。工具结果以 ToolMessage 回到消息列表，再从 agent 走一遍。
     """
-    model = model or ChatOpenAI(
-        model=LLM_MODEL,
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
-        temperature=0,
-        streaming=True,  # 关掉流式就没有 text_delta，前端只能等整段回复
-    )
+    model = model or _build_model()
     model_with_tools = model.bind_tools(TOOLS)
 
     async def call_model(state: MessagesState):
@@ -238,26 +324,63 @@ class LangGraphRunner:
             yield event
 
     async def history(self, thread_id: str) -> list[HistoryMessage]:
+        """
+        从状态里重建会话历史。
+
+        工具调用不是另存一份记录，而是**从消息本身推出来**：`AIMessage.tool_calls` 是调用，
+        按 `tool_call_id` 配对的 `ToolMessage` 是结果——两边都在检查点里。
+        模型先调工具、再给结论，所以卡片挂在后面那条有正文的 assistant 消息上。
+        """
         snapshot = await self.graph.aget_state(self._config(thread_id))
-        result: list[HistoryMessage] = []
-        # 只回人类与模型的文本：工具消息不进历史，前端恢复的是对话本身
-        for message in snapshot.values.get("messages", []):
+        messages = snapshot.values.get("messages", [])
+        results = {
+            message.tool_call_id: message
+            for message in messages
+            if isinstance(message, ToolMessage)
+        }
+
+        out: list[HistoryMessage] = []
+        pending_calls: list[HistoryToolCall] = []
+        for message in messages:
             if isinstance(message, HumanMessage):
-                role = "user"
-            elif isinstance(message, AIMessage):
-                role = "assistant"
-            else:
-                continue
-            text = _text_of(message)
-            if not text:
-                continue
-            result.append(
-                HistoryMessage(
-                    role=role, content=text, id=getattr(message, "id", None)
+                out.append(
+                    HistoryMessage(
+                        role="user",
+                        content=_text_of(message),
+                        id=getattr(message, "id", None),
+                    )
                 )
+                continue
+            if not isinstance(message, AIMessage):
+                # 工具消息不进正文：它已经以卡片形式挂在调用的那条 assistant 消息上了
+                continue
+
+            pending_calls.extend(
+                _to_history_call(call, results.get(call["id"]))
+                for call in message.tool_calls
             )
-        logger.debug("读取历史 thread=%s 条数=%d", thread_id, len(result))
-        return result
+            text = _text_of(message)
+            if text:
+                out.append(
+                    HistoryMessage(
+                        role="assistant",
+                        content=text,
+                        id=getattr(message, "id", None),
+                        tool_calls=pending_calls,
+                    )
+                )
+                pending_calls = []
+
+        if pending_calls:
+            # 只有调用没有结论：停在待确认上，或那一轮被中断了。
+            # 补一条空正文的消息，卡片才有地方挂。
+            out.append(
+                HistoryMessage(role="assistant", content="", tool_calls=pending_calls)
+            )
+
+        calls = sum(len(item.tool_calls) for item in out)
+        logger.debug("读取历史 thread=%s 消息=%d 工具调用=%d", thread_id, len(out), calls)
+        return out
 
     async def delete_thread(self, thread_id: str) -> None:
         """
@@ -412,6 +535,23 @@ class LangGraphRunner:
                         error=result if failed else None,
                     )
                 )
+
+            elif kind == "on_tool_error":
+                # 工具抛异常时 LangGraph 只发 error、不发 end（langgraph#6018），
+                # 所以这里补上 tool_end，否则前端那张卡片会一直停在"运行中"。
+                # 中断也从这条路上来（interrupt 抛的是 GraphBubbleUp），那不是失败：
+                # 卡片由确认卡片接手，前端收到 interrupt 时会把运行中的卡片标成未完成。
+                error = event["data"].get("error")
+                tool_started.pop(event["run_id"], None)
+                if isinstance(error, GraphBubbleUp):
+                    logger.debug("工具停在中断上 name=%s", event.get("name", ""))
+                else:
+                    logger.debug("工具抛异常 name=%s：%s", event.get("name", ""), error)
+                    yield ToolEndEvent(
+                        data=ToolEndData(
+                            id=event["run_id"], ok=False, error=_brief(str(error))
+                        )
+                    )
 
         # 中断不出现在 astream_events 里，只能跑完从状态快照读。
         snapshot = await self.graph.aget_state(config)

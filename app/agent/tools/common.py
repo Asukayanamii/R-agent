@@ -7,11 +7,26 @@
 
 import os
 from pathlib import Path
+from typing import NoReturn
+
+from langchain_core.tools import ToolException
 
 from app.agent.runtime import workspace_relative
 
 MAX_BYTES = 50 * 1024
 MAX_LINES = 2000
+
+
+def fail(message: str) -> NoReturn:
+    """
+    工具"没做成"时抛这个：文件不存在、沙箱拒绝、命令非零退出、参数不合法……
+
+    返回值表示**做成了**，结果就是这个（包括"没有匹配"这类空结果）。
+    分开之后：模型收到的那句话不变，而 ToolMessage 会带上 `status=error`——
+    前端把卡片标成"失败"，历史恢复出来也还是"失败"。
+    """
+    raise ToolException(message)
+
 
 SKIP_DIRS = {
     ".git",

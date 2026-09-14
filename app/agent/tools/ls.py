@@ -5,7 +5,7 @@ from datetime import datetime
 from langchain_core.tools import tool
 
 from app.agent.sandbox import READ, guard_path
-from app.agent.tools.common import MAX_LINES, rel
+from app.agent.tools.common import MAX_LINES, fail, rel
 from app.exceptions import SandboxDenied
 
 
@@ -20,19 +20,19 @@ async def ls(path: str = ".") -> str:
     try:
         target = guard_path(path, READ)
     except SandboxDenied as exc:
-        return str(exc)
+        fail(str(exc))
 
     if not target.exists():
-        return f"路径不存在：{rel(target)}"
+        fail(f"路径不存在：{rel(target)}")
     if not target.is_dir():
-        return f"{rel(target)} 不是目录，请用 read"
+        fail(f"{rel(target)} 不是目录，请用 read")
 
     try:
         entries = sorted(
             target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())
         )
     except OSError as exc:
-        return f"读取目录失败：{exc}"
+        fail(f"读取目录失败：{exc}")
 
     if not entries:
         return f"{rel(target)} 是空目录"

@@ -3,7 +3,7 @@
 from langchain_core.tools import tool
 
 from app.agent.sandbox import WRITE, guard_path
-from app.agent.tools.common import rel
+from app.agent.tools.common import fail, rel
 from app.exceptions import SandboxDenied
 
 
@@ -20,17 +20,17 @@ async def write(path: str, content: str) -> str:
     try:
         target = guard_path(path, WRITE)
     except SandboxDenied as exc:
-        return str(exc)
+        fail(str(exc))
 
     if target.is_dir():
-        return f"{rel(target)} 是目录，不能写入"
+        fail(f"{rel(target)} 是目录，不能写入")
 
     existed = target.is_file()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8", newline="")
     except OSError as exc:
-        return f"写入失败：{exc}"
+        fail(f"写入失败：{exc}")
 
     size = len(content.encode("utf-8"))
     lines = len(content.splitlines())

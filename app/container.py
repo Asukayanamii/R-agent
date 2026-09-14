@@ -9,7 +9,7 @@ import logging
 from contextlib import AsyncExitStack
 from pathlib import Path
 
-from app.agent.runner import AgentRunner, StubRunner, UnconfiguredRunner
+from app.agent.runner import AgentRunner, StubRunner
 from app.dao.thread_index_dao import ThreadIndexDao
 from app.dao.workspace_dao import WorkspaceDao
 from app.service.chat_service import ChatService
@@ -34,12 +34,13 @@ async def _build_runner() -> AgentRunner:
         return StubRunner()
 
     if not llm_configured():
-        logger.warning("未配置 LLM_API_KEY，对话接口会直接返回错误说明")
-        return UnconfiguredRunner()
+        # 没配 key 只是"不能跑对话"：历史、列表、删除都读检查点，跟模型无关，照样可用
+        logger.warning("未配置 LLM_API_KEY：对话会直接返回错误说明，历史与列表照常可读")
 
     from app.agent.langgraph_runner import LangGraphRunner
 
-    logger.info("对话走模型：model=%s base_url=%s", LLM_MODEL, LLM_BASE_URL)
+    if llm_configured():
+        logger.info("对话走模型：model=%s base_url=%s", LLM_MODEL, LLM_BASE_URL)
 
     if SQLITE_PATH:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver

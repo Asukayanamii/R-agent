@@ -5,6 +5,7 @@ from langchain_core.tools import tool
 from app.agent.sandbox import READ, guard_path
 from app.agent.tools.common import (
     MAX_LINES,
+    fail,
     looks_binary,
     rel,
     truncate_head,
@@ -25,25 +26,25 @@ async def read(path: str, offset: int = 1, limit: int = MAX_LINES) -> str:
     try:
         target = guard_path(path, READ)
     except SandboxDenied as exc:
-        return str(exc)
+        fail(str(exc))
 
     if not target.exists():
-        return f"文件不存在：{rel(target)}"
+        fail(f"文件不存在：{rel(target)}")
     if target.is_dir():
-        return f"{rel(target)} 是目录，请用 ls 查看"
+        fail(f"{rel(target)} 是目录，请用 ls 查看")
     if looks_binary(target):
-        return f"{rel(target)} 看起来是二进制文件，read 只处理文本"
+        fail(f"{rel(target)} 看起来是二进制文件，read 只处理文本")
 
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        return f"读取失败：{exc}"
+        fail(f"读取失败：{exc}")
 
     lines = text.splitlines()
     total = len(lines)
     start = max(1, int(offset))
     if start > total:
-        return f"{rel(target)} 共 {total} 行，起始行 {start} 超出范围"
+        fail(f"{rel(target)} 共 {total} 行，起始行 {start} 超出范围")
 
     window = lines[start - 1 : start - 1 + max(1, int(limit))]
     width = len(str(start + len(window) - 1))

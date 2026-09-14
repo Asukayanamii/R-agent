@@ -3,7 +3,7 @@
 from langchain_core.tools import tool
 
 from app.agent.sandbox import WRITE, guard_path
-from app.agent.tools.common import rel
+from app.agent.tools.common import fail, rel
 from app.exceptions import SandboxDenied
 
 
@@ -40,20 +40,20 @@ async def edit(
     - 只改一小段用这个，不要用 write 整文件覆盖
     """
     if not old_string:
-        return "old_string 不能为空"
+        fail("old_string 不能为空")
 
     try:
         target = guard_path(path, WRITE)
     except SandboxDenied as exc:
-        return str(exc)
+        fail(str(exc))
 
     if not target.is_file():
-        return f"{rel(target)} 不是文件"
+        fail(f"{rel(target)} 不是文件")
 
     try:
         raw = target.read_text(encoding="utf-8")
     except OSError as exc:
-        return f"读取失败：{exc}"
+        fail(f"读取失败：{exc}")
 
     # 统一按 LF 比较，写回时再还原原文件的换行风格，
     # 否则在 Windows 上一个小改动会把整个文件的行尾翻掉。
@@ -68,7 +68,7 @@ async def edit(
     if count == 0:
         span = fuzzy_span(text.split("\n"), pattern.split("\n"))
         if span is None:
-            return (
+            fail(
                 f"在 {rel(target)} 里找不到 old_string。"
                 "请先用 read 确认原文（注意缩进与空行），或改用 write 整体覆盖。"
             )
@@ -78,7 +78,7 @@ async def edit(
         strategy = "忽略行尾空白匹配"
 
     if count > 1 and not replace_all:
-        return (
+        fail(
             f"old_string 在 {rel(target)} 中出现 {count} 次，无法确定改哪一处。"
             "请多带些上下文使其唯一，或传 replace_all=true 全部替换。"
         )
@@ -93,7 +93,7 @@ async def edit(
     try:
         target.write_text(output, encoding="utf-8", newline="")
     except OSError as exc:
-        return f"写入失败：{exc}"
+        fail(f"写入失败：{exc}")
 
     places = count if replace_all else 1
     return f"已修改 {rel(target)}（{strategy}，替换 {places} 处）"

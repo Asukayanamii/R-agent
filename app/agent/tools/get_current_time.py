@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.tools import tool
 
+from app.agent.tools.common import fail
+
 WEEKDAYS_CN = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 
 FORMAT_NAMES = ("iso", "timestamp", "date", "time", "human", "cn", "rfc", "full")
@@ -71,12 +73,12 @@ async def get_current_time(format: str = "iso", timezone: str = "") -> str:
     """
     key = (format or "iso").strip().lower()
     if key not in FORMAT_NAMES:
-        return f"未知的 format：{format}。可选：{'、'.join(FORMAT_NAMES)}"
+        fail(f"未知的 format：{format}。可选：{'、'.join(FORMAT_NAMES)}")
 
     try:
         zone = resolve_timezone(timezone)
     except (ZoneInfoNotFoundError, ValueError):
-        return (
+        fail(
             f"无法识别的时区：{timezone}。"
             "请用 IANA 名称，例如 UTC、Asia/Shanghai、America/New_York。"
         )

@@ -28,7 +28,6 @@ from app.event.events import (
     ToolStartEvent,
     Usage,
 )
-from app.exceptions import ModelUnavailable
 from app.models.entities import ThreadRecord
 
 
@@ -101,51 +100,6 @@ class AgentRunner(Protocol):
         这是慢路径（每个会话要单独查一次状态），只应在索引重建时调用。
         """
         ...
-
-
-class UnconfiguredRunner:
-    """
-    没配模型时的替身：不复读、不假装，直接把"跑不了"抛出去。
-
-    异常由 SSE 层收成 `error` 事件（`app.event.stream`），用户看到的是原因和怎么修；
-    而且它绕过了业务层的 `_record`，所以不会留下一条"点进去什么都没有"的索引行。
-    其余能力一律空实现——列表、历史、删除都不依赖模型，照常可用。
-    """
-
-    REASON = (
-        "未配置 LLM_API_KEY，无法对话。"
-        "在项目根目录的 .env 里填上 key（可参考 .env.example），重启应用后即可使用。"
-    )
-
-    async def history(self, thread_id: str) -> list[HistoryMessage]:
-        return []
-
-    async def delete_thread(self, thread_id: str) -> None:
-        return None
-
-    async def is_interrupted(self, thread_id: str) -> bool:
-        return False
-
-    async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
-        return []
-
-    async def has_dangling_tool_calls(self, thread_id: str) -> bool:
-        return False
-
-    async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
-        return []
-
-    async def stream(
-        self, thread_id: str, message: str, workspace: str | None = None
-    ) -> AsyncIterator[BaseModel]:
-        raise ModelUnavailable(self.REASON)
-        yield  # 到不了：只为让本方法保持异步生成器，异常在第一次取值时抛出
-
-    async def resume(
-        self, thread_id: str, value: str, workspace: str | None = None
-    ) -> AsyncIterator[BaseModel]:
-        raise ModelUnavailable(self.REASON)
-        yield  # 同上
 
 
 class StubRunner:

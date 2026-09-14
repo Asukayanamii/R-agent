@@ -35,6 +35,7 @@ class ModelUnavailable(RuntimeError):
     """
     没有可用的模型：没配 `LLM_API_KEY`。
 
-    agent 执行器在"根本跑不起来"时抛出，由 SSE 层收成 `error` 事件（见 `app.event.stream`）。
-    **不降级成桩实现**：复读一条像模像样的回复，比直接报错更糟——用户会以为模型在回话。
+    `langgraph_runner` 在没配 key 时会拿一个占位模型顶上，一调用就抛它；由 SSE 层收成
+    `error` 事件（见 `app.event.stream`）。**不降级成桩实现**：复读一条像模像样的回复，
+    比直接报错更糟——用户会以为模型在回话。
     """

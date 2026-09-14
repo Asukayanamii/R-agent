@@ -1291,15 +1291,58 @@ function addAssistantTurn() {
   return { turn, md, textNode, caret, body };
 }
 
-function addStaticTurn(role, content) {
+/* ---------- 工具卡片 ----------
+   实时渲染与历史恢复共用同一套 DOM：实时靠事件流（tool_start / tool_end），
+   历史靠消息状态里推出来的 tool_calls（AIMessage 的调用 + ToolMessage 的结果）。 */
+function makeToolCard(name, args) {
+  const card = el("div", "tool");
+  const head = el("div", "tool-head");
+  head.appendChild(el("span", "chev", "▶"));
+  head.appendChild(el("span", "tname", name));
+  const state = el("span", "tstate", "运行中…");
+  head.appendChild(state);
+  const body = el("div", "tool-body", JSON.stringify(args || {}, null, 2));
+  card.appendChild(head);
+  card.appendChild(body);
+  head.onclick = () => card.classList.toggle("open");
+  return { card, state, body, args: args || {} };
+}
+
+/* 三种收尾状态：完成 / 失败 / 未完成（停在待确认上，或那一轮被中断了） */
+const TOOL_STATE = {
+  ok: { text: "完成", color: "var(--ok)" },
+  failed: { text: "失败", color: "var(--danger)" },
+  pending: { text: "未完成", color: "var(--warn)" },
+};
+
+function finishTool(t, state, output) {
+  const look = TOOL_STATE[state] || TOOL_STATE.ok;
+  t.state.textContent = look.text;
+  t.state.style.color = look.color;
+  if (state === "failed") t.card.classList.add("fail");
+  t.body.textContent = JSON.stringify(t.args, null, 2) + "\n→ " + (output ?? "");
+  t.done = true;
+}
+
+function addStaticTurn(role, content, toolCalls = []) {
   if (role === "user") { addUserTurn(content); return; }
   const turn = el("div", "turn bot");
   turn.appendChild(el("div", "avatar", "AI"));
   const body = el("div", "body");
+
+  // 卡片在正文上方：当时的顺序就是先调工具、再给结论
+  for (const call of toolCalls) {
+    const t = makeToolCard(call.name, call.args);
+    if (call.state === "failed") finishTool(t, "failed", call.error);
+    else if (call.state === "pending") finishTool(t, "pending", call.error || "等待用户确认");
+    else finishTool(t, "ok", call.result);
+    body.appendChild(t.card);
+  }
+
   const md = el("div", "md");
   md.innerHTML = renderMd(content);
   body.appendChild(md);
-  addActions(body, () => content);
+  if (content) addActions(body, () => content);
   turn.appendChild(body);
   list.appendChild(turn);
   toBottom();
@@ -1330,33 +1373,25 @@ function newTurn() {
     },
 
     toolStart(d) {
-      const card = el("div", "tool");
-      const head = el("div", "tool-head");
-      head.appendChild(el("span", "chev", "▶"));
-      head.appendChild(el("span", "tname", d.name));
-      head.appendChild(el("span", "tstate", "运行中…"));
-      const bodyEl = el("div", "tool-body", JSON.stringify(d.args, null, 2));
-      card.appendChild(head);
-      card.appendChild(bodyEl);
-      head.onclick = () => card.classList.toggle("open");
-      md.parentNode.insertBefore(card, md);
-      tools[d.id] = { card, state: head.querySelector(".tstate"), body: bodyEl, args: d.args };
+      const t = makeToolCard(d.name, d.args);
+      md.parentNode.insertBefore(t.card, md);
+      tools[d.id] = t;
       toBottom();
     },
 
     toolEnd(d) {
       const t = tools[d.id];
       if (!t) return;
-      t.state.textContent = d.ok ? "完成" : "失败";
-      t.state.style.color = d.ok ? "var(--ok)" : "var(--danger)";
-      if (!d.ok) t.card.classList.add("fail");
-      t.body.textContent =
-        JSON.stringify(t.args, null, 2) + "\n→ " + (d.ok ? d.result : d.error);
+      finishTool(t, d.ok ? "ok" : "failed", d.ok ? d.result : d.error);
       toBottom();
     },
 
     interrupt(d) {
       ctx.sawInterrupt = true;
+      // 等确认的工具不会再有 tool_end：把还挂着的卡片收成"未完成"，别让它一直转
+      for (const t of Object.values(tools)) {
+        if (!t.done) finishTool(t, "pending", "等待用户确认");
+      }
       const card = el("div", "confirm");
       const title = el("div", "ctitle", "需要确认");
       card.appendChild(title);
@@ -1540,7 +1575,7 @@ async function openThread(id) {
       showEmpty();
       return;
     }
-    messages.forEach((m) => addStaticTurn(m.role, m.content));
+    messages.forEach((m) => addStaticTurn(m.role, m.content, m.tool_calls || []));
 
     // 卡住的会话要能在这里继续确认，否则用户进来只见历史、无处可点
     if (pending.length) {

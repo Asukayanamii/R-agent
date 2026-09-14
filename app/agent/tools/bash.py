@@ -24,7 +24,7 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from app.agent.runtime import current_workspace
-from app.agent.tools.common import truncate_tail
+from app.agent.tools.common import fail, truncate_tail
 
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 600
@@ -107,14 +107,14 @@ async def bash(command: str, timeout_sec: int = DEFAULT_TIMEOUT) -> str:
     - **沙箱不约束本工具**：shell 能访问工作区之外的位置。别把文件工具的限制当成覆盖 bash 的边界
     """
     if not command.strip():
-        return "命令为空。"
+        fail("命令为空。")
 
     timeout = max(1, min(int(timeout_sec), MAX_TIMEOUT))
     shell = shell_command()
     workdir = current_workspace.get()
 
     if not workdir.is_dir():
-        return f"工作区不存在或不是目录：{workdir.as_posix()}"
+        fail(f"工作区不存在或不是目录：{workdir.as_posix()}")
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -134,7 +134,7 @@ async def bash(command: str, timeout_sec: int = DEFAULT_TIMEOUT) -> str:
             start_new_session=sys.platform != "win32",
         )
     except OSError as exc:
-        return f"无法启动 shell（{shell[0]}）：{exc}"
+        fail(f"无法启动 shell（{shell[0]}）：{exc}")
 
     chunks: list[bytes] = []
     stats = {"total": 0, "dropped": 0}
@@ -159,9 +159,13 @@ async def bash(command: str, timeout_sec: int = DEFAULT_TIMEOUT) -> str:
 
     if timed_out:
         tail = f"\n结束前已产生的输出：\n{body}" if body.strip() else ""
-        return f"命令超过 {timeout}s 未结束，已终止整个进程树。{tail}"
+        fail(f"命令超过 {timeout}s 未结束，已终止整个进程树。{tail}")
 
-    status = f"退出码 {proc.returncode}"
-    if proc.returncode != 0:
-        status += "（非 0，命令失败）"
-    return f"{status}\n{body}" if body.strip() else status
+    # 非 0 退出也算"没做成"：模型与卡片都该看到失败，而不是一条普通结果。
+    # 预期会返回非 0 的（grep 无匹配之类）用专门工具，别用 bash。
+    failed = proc.returncode != 0
+    status = f"退出码 {proc.returncode}" + ("（非 0，命令失败）" if failed else "")
+    output = f"{status}\n{body}" if body.strip() else status
+    if failed:
+        fail(output)
+    return output
