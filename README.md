@@ -131,6 +131,7 @@ python -m uvicorn app.main:app --reload --port 8000
 | `find` | 按 glob 找文件 | `*` 跨目录，结果排序 |
 | `grep` | 按正则搜内容 | 支持 glob 过滤与忽略大小写；跳过噪音目录与二进制文件 |
 | `bash` | 执行命令 | 见下 |
+| `get_current_time` | 取当前时间 | 八种格式（`iso` 默认 / `timestamp` / `date` / `time` / `human` / `cn` / `rfc` / `full`），支持 IANA 命名时区 |
 
 **六个文件工具共用的安全属性**：所有路径都经 `common.resolve_path` 解析并
 **限制在项目根之下**，`../../` 或指向外部的绝对路径一律拒绝。模型给的路径可能来自

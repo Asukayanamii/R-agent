@@ -10,12 +10,13 @@
 from app.agent.tools.bash import bash
 from app.agent.tools.edit import edit
 from app.agent.tools.find import find
+from app.agent.tools.get_current_time import get_current_time
 from app.agent.tools.grep import grep
 from app.agent.tools.ls import ls
 from app.agent.tools.read import read
 from app.agent.tools.write import write
 
-TOOLS = [read, write, edit, ls, find, grep, bash]
+TOOLS = [read, write, edit, ls, find, grep, bash, get_current_time]
 
 APPROVAL_REQUIRED: set[str] = set()
 """
