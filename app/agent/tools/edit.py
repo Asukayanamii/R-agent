@@ -38,6 +38,8 @@ async def edit(
     - 确实要多处一起改时传 replace_all=true
     - 找不到完全一致的片段时，会退化为忽略行尾空白的匹配
     - 只改一小段用这个，不要用 write 整文件覆盖
+    - **改已有文件就用这个**，别用 bash 的 sed -i / tee：这里保留原文件的换行风格，
+      也不会把没打算改的地方顺手改掉
     """
     if not old_string:
         fail("old_string 不能为空")

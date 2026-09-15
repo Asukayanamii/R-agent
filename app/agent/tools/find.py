@@ -17,6 +17,8 @@ async def find(pattern: str, path: str = ".", max_results: int = 200) -> str:
     - pattern 里的 * 可以跨目录，所以 "*.py" 会匹配任意层级的 py 文件
     - path 限定搜索起点
     - 结果按路径排序，超过 max_results 时截断
+    - **按名字找文件就用这个**，别用 bash 的 find：这里会自动跳过 .git/node_modules
+      这类噪音目录，结果也按路径排好
     """
     try:
         target = guard_path(path, READ)

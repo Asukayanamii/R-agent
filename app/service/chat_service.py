@@ -23,7 +23,8 @@ from app.exceptions import InvalidInput
 from app.event.events import (
     BrowseEntry,
     BrowseResponse,
-    HistoryMessage,
+    CompactionInfo,
+    HistoryView,
     InterruptData,
     InterruptEvent,
     MessageEndData,
@@ -236,7 +237,11 @@ class ChatService:
             )
         )
 
-    async def history(self, thread_id: str) -> list[HistoryMessage]:
+    async def compact(self, thread_id: str) -> CompactionInfo | None:
+        """主动压缩上下文。返回 None 表示没得压（会话还短、中段不足两条）。"""
+        return await self._runner.compact(thread_id)
+
+    async def history(self, thread_id: str) -> HistoryView:
         return await self._runner.history(thread_id)
 
     async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:

@@ -23,6 +23,7 @@ class EventType(str, Enum):
     TOOL_START = "tool_start"
     TOOL_END = "tool_end"
     INTERRUPT = "interrupt"
+    COMPACT = "compact"
     MESSAGE_END = "message_end"
     ERROR = "error"
     DONE = "done"
@@ -57,6 +58,19 @@ class InterruptData(BaseModel):
     id: str = Field(..., description="介入请求 ID")
     prompt: str = Field(..., description="需要用户确认的内容")
     options: list[str] = Field(default_factory=list, description="候选选项，为空表示自由输入")
+
+
+class CompactData(BaseModel):
+    """
+    一次上下文压缩。
+
+    消息一条没删：这条事件只是告诉前端"从这条分界起，早前内容在发给模型时换成摘要了"。
+    """
+
+    tokens_before: int = Field(..., description="压缩前估算的提示词 tokens")
+    tokens_after: int = Field(..., description="压缩后估算的 tokens")
+    summary: str = Field(..., description="中段的摘要正文，供用户展开查看")
+    count: int = Field(..., description="该会话累计压缩次数")
 
 
 class Usage(BaseModel):
@@ -113,6 +127,29 @@ class HistoryMessage(BaseModel):
     )
 
 
+class CompactionInfo(BaseModel):
+    """
+    会话历史里的压缩分界。
+
+    分隔线插在 `before` 处：那之前的消息在**发给模型时**已被摘要替代，
+    但界面上照旧完整——原文一条都没删。
+    """
+
+    before: int = Field(..., description="插在 messages 列表第几条之前（服务端算好的展示位置）")
+    summary: str = Field(..., description="摘要正文，供用户展开查看")
+    tokens_before: int = 0
+    tokens_after: int = 0
+    count: int = Field(0, description="该会话累计压缩次数")
+    at: str = Field("", description="最近一次压缩发生的时刻（ISO）")
+
+
+class HistoryView(BaseModel):
+    """读一次会话历史的结果：消息 + 压缩分界。"""
+
+    messages: list[HistoryMessage] = Field(default_factory=list)
+    compaction: CompactionInfo | None = None
+
+
 class WorkspaceInfo(BaseModel):
     """工作区的协议形态。默认工作区（应用所在目录）也是这个样子，没有特殊形态。"""
 
@@ -156,13 +193,16 @@ class BrowseResponse(BaseModel):
 
 
 class HistoryResponse(BaseModel):
-    """打开旧会话时要恢复的东西：消息 + 还挂着的待确认项。"""
+    """打开旧会话时要恢复的东西：消息 + 还挂着的待确认项 + 压缩分界。"""
 
     thread_id: str
     messages: list[HistoryMessage]
     pending: list[InterruptData] = Field(
         default_factory=list,
         description="待确认项。前端据此在历史末尾补渲染确认卡片，否则卡住的会话进去无处可点",
+    )
+    compaction: CompactionInfo | None = Field(
+        None, description="压缩分界；会话没压缩过就是 None"
     )
 
 
@@ -204,6 +244,11 @@ class InterruptEvent(BaseModel):
     data: InterruptData
 
 
+class CompactEvent(BaseModel):
+    type: Literal[EventType.COMPACT] = EventType.COMPACT
+    data: CompactData
+
+
 class MessageEndEvent(BaseModel):
     type: Literal[EventType.MESSAGE_END] = EventType.MESSAGE_END
     data: MessageEndData
@@ -226,6 +271,7 @@ AgentEvent = Annotated[
         ToolStartEvent,
         ToolEndEvent,
         InterruptEvent,
+        CompactEvent,
         MessageEndEvent,
         ErrorEvent,
         DoneEvent,

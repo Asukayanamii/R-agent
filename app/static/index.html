@@ -381,6 +381,32 @@
     margin-top: 2px;
   }
 
+  /* 上下文压缩分隔线：线上面的消息在发给模型时已换成摘要，界面上原文照旧完整 */
+  .compact {
+    font-size: 12px;
+    color: var(--text-faint);
+    border-top: 1px dashed var(--border);
+    margin: 10px 0 6px;
+    padding-top: 6px;
+  }
+  .compact summary { cursor: pointer; }
+  /* 刚压缩完时短暂高亮一下：重放历史会停在底部，光滚过去容易看漏 */
+  .compact.flash { border-top-color: var(--warn); }
+  .compact.flash > div:first-child { color: var(--warn); font-weight: 600; }
+  .compact .csum {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-raise);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    max-height: 260px;
+    overflow: auto;
+  }
+
   /* 流式光标照 Open WebUI：w-[0.125rem] h-3.5 的脉冲竖条 */
   .caret {
     display: inline-block;
@@ -702,6 +728,7 @@
       <span class="icon">⌂</span><span class="label" id="wsLabel">工作区</span>
     </button>
     <span class="spacer"></span>
+    <button class="icon-btn" id="compactBtn" title="把中段摘要掉，消息一条不删（等价 /compact）">压缩</button>
     <button class="icon-btn" id="logBtn">事件</button>
   </div>
 
@@ -752,6 +779,7 @@ const handlers = {
   tool_start: (d, ctx) => ctx.toolStart(d),
   tool_end: (d, ctx) => ctx.toolEnd(d),
   interrupt: (d, ctx) => ctx.interrupt(d),
+  compact: (d, ctx) => ctx.compact(d),
   message_end: (d, ctx) => ctx.messageEnd(d),
   error: (d, ctx) => ctx.error(d),
   done: (d, ctx) => { ctx.sawDone = true; },
@@ -898,6 +926,7 @@ async function loadHistory(threadId) {
   return {
     messages: body.data?.messages || [],
     pending: body.data?.pending || [],
+    compaction: body.data?.compaction || null,
   };
 }
 
@@ -1341,6 +1370,28 @@ function finishTool(t, state, output) {
   t.done = true;
 }
 
+/* 压缩分隔线：历史恢复与实时渲染共用同一套 DOM */
+function compactionNote(info) {
+  const box = el("div", "compact");
+  box.appendChild(
+    el(
+      "div",
+      null,
+      `上下文已压缩（约 ${info.tokens_before} → ${info.tokens_after} tokens）：` +
+        `以上内容在发给模型时已换成摘要，原文仍保留在会话里。`,
+    ),
+  );
+  if (info.summary) {
+    const det = document.createElement("details");
+    const sum = document.createElement("summary");
+    sum.textContent = "查看摘要";
+    det.appendChild(sum);
+    det.appendChild(el("div", "csum", info.summary));
+    box.appendChild(det);
+  }
+  return box;
+}
+
 function addStaticTurn(role, content, toolCalls = []) {
   if (role === "user") { addUserTurn(content); return; }
   const turn = el("div", "turn bot");
@@ -1413,6 +1464,13 @@ function newTurn() {
       const t = tools[d.id];
       if (!t) return;
       finishTool(t, d.ok ? "ok" : "failed", d.ok ? d.result : d.error);
+      toBottom();
+    },
+
+    compact(d) {
+      // 压缩发生在模型回复之前，但这一刻早前的轮次已经画在屏幕上了；精确位置只有重开
+      // 会话时才回放得出（见 openThread）。这里就近插在当前回复顶上，说清发生了什么。
+      body.insertBefore(compactionNote(d), body.firstChild);
       toBottom();
     },
 
@@ -1637,12 +1695,18 @@ async function openThread(id) {
   renderWorkspaceChip();
   clearList();
   try {
-    const { messages, pending } = await loadHistory(id);
+    const { messages, pending, compaction } = await loadHistory(id);
     if (!messages.length && !pending.length) {
       showEmpty();
       return;
     }
-    messages.forEach((m) => addStaticTurn(m.role, m.content, m.tool_calls || []));
+    messages.forEach((m, index) => {
+      // 分隔线插在服务端算好的位置：那之前的消息发给模型时已换成摘要，界面上照旧完整
+      if (compaction && index === compaction.before) {
+        list.appendChild(compactionNote(compaction));
+      }
+      addStaticTurn(m.role, m.content, m.tool_calls || []);
+    });
 
     // 卡住的会话要能在这里继续确认，否则用户进来只见历史、无处可点
     if (pending.length) {
@@ -1878,6 +1942,47 @@ wsPick.onclick = () => pickWorkspace();
 document.getElementById("logBtn").onclick = (e) => {
   drawer.classList.toggle("open");
   e.currentTarget.classList.toggle("on", drawer.classList.contains("open"));
+};
+
+/* 主动压缩：与自动压缩共用后端逻辑，区别只是跳过阈值与冷却。
+   压完重放一次历史——分隔线的精确位置由服务端算好，和重开会话走同一条路。 */
+const compactBtn = document.getElementById("compactBtn");
+compactBtn.onclick = async () => {
+  if (busy) return;
+  if (!threadId) {
+    showError("还没有会话：先发一条消息再压缩。");
+    return;
+  }
+  compactBtn.disabled = true;
+  const label = compactBtn.textContent;
+  compactBtn.textContent = "压缩中…";
+  try {
+    const res = await fetch("/chat/compact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thread_id: threadId }),
+    });
+    const body = await res.json();
+    if (body.code !== 0) {
+      showError(body.message || "压缩失败");
+      return;
+    }
+    await openThread(threadId);
+    // 分隔线在历史中间（常在第四五条那儿），而重放历史会停在底部——把它滚进视野并高亮，
+    // 否则点了压缩的人根本看不到发生了什么
+    const notes = list.querySelectorAll(".compact");
+    const note = notes[notes.length - 1];
+    if (note) {
+      note.scrollIntoView({ block: "center", behavior: "smooth" });
+      note.classList.add("flash");
+      setTimeout(() => note.classList.remove("flash"), 1600);
+    }
+  } catch (err) {
+    showError(`压缩失败：${err.message || err}`);
+  } finally {
+    compactBtn.disabled = false;
+    compactBtn.textContent = label;
+  }
 };
 
 document.getElementById("themeBtn").onclick = () => {
