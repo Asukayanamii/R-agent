@@ -20,6 +20,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if not (PROJECT_ROOT / "requirements.txt").is_file():
     raise RuntimeError(f"PROJECT_ROOT 算错了，指向 {PROJECT_ROOT}")
 
+CONFIG_DIR = ".my_agent"
+"""应用在工作区/用户目录下用的隐藏目录名。
+
+沙箱授权（`sandbox.json`）、技能库（`skills/`）、项目约定（`AGENTS.md`）都住在这个名字下，
+所以它只能有一处定义——写两处迟早会分叉，而分叉的表现是"某个功能静默看不到文件"。
+"""
+
 # 显式指定 .env 位置，不用 load_dotenv() 的上溯查找：
 # 上溯是按调用方文件位置找的，行为和路径解析不一致，容易踩坑。
 load_dotenv(PROJECT_ROOT / ".env")
@@ -112,6 +119,20 @@ def _resolve(raw: str) -> str:
 
 
 SQLITE_PATH = _resolve(os.getenv("SQLITE_PATH", "./data/checkpoints.db"))
+
+# ---- 技能（Skills）与项目约定（AGENTS.md） ----
+# 技能是"索引常驻 + 正文按需读取"的能力包（`SKILL.md`），约定文件是 `AGENTS.md` / `CLAUDE.md`。
+# 两者都只做**提示词注入**，没有任何检索：索引全量进系统提示词，匹不匹配交给模型判断。
+SKILLS_ENABLED = os.getenv("SKILLS_ENABLED", "1").strip() != "0"
+
+# 全局技能库。工作区技能库固定在 `<工作区>/.my_agent/skills`，不用配。
+# 它同时是沙箱的"受信只读根"：模型读这里的正文不弹授权卡片（只读，写仍要授权）。
+SKILLS_DIR = _resolve(os.getenv("SKILLS_DIR", "~/.my_agent/skills"))
+
+AGENTS_MD_ENABLED = os.getenv("AGENTS_MD_ENABLED", "1").strip() != "0"
+
+# 是否向上遍历祖先目录找约定文件（到含 .git 的目录为止）。关掉就只读全局与工作区根。
+AGENTS_ANCESTORS = os.getenv("AGENTS_ANCESTORS", "1").strip() != "0"
 
 
 def llm_configured() -> bool:

@@ -22,6 +22,8 @@ _service: ChatService | None = None
 
 async def _build_runner() -> AgentRunner:
     from app.config import (
+        AGENTS_ANCESTORS,
+        AGENTS_MD_ENABLED,
         COMPACT_AT,
         COMPACT_ENABLED,
         COMPACT_KEEP_TOKENS,
@@ -31,6 +33,8 @@ async def _build_runner() -> AgentRunner:
         LLM_BASE_URL,
         LLM_CONTEXT_WINDOW,
         LLM_MODEL,
+        SKILLS_DIR,
+        SKILLS_ENABLED,
         SQLITE_PATH,
         STUB_ENABLED,
         llm_configured,
@@ -66,6 +70,25 @@ async def _build_runner() -> AgentRunner:
         )
     else:
         logger.info("上下文压缩已关闭（COMPACT_ENABLED=0）")
+
+    # 技能与项目约定：把"从哪儿找"写进日志——不生效时第一个要看的就这几行
+    if SKILLS_ENABLED:
+        logger.info(
+            "技能已开启：工作区库 <工作区>/.my_agent/skills；全局库 %s",
+            SKILLS_DIR or "（未配置 SKILLS_DIR，只有工作区技能）",
+        )
+    else:
+        logger.info("技能已关闭（SKILLS_ENABLED=0）")
+
+    if AGENTS_MD_ENABLED:
+        logger.info(
+            "项目约定注入已开启：全局 ~/.my_agent/AGENTS.md%s",
+            "＋祖先目录（到含 .git 的目录为止）＋工作区根"
+            if AGENTS_ANCESTORS
+            else "＋工作区根（AGENTS_ANCESTORS=0，不向上遍历）",
+        )
+    else:
+        logger.info("项目约定注入已关闭（AGENTS_MD_ENABLED=0）")
 
     if SQLITE_PATH:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver

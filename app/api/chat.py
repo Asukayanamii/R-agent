@@ -10,6 +10,7 @@ from app.event.events import (
     BrowseResponse,
     CompactionInfo,
     HistoryResponse,
+    SkillListResponse,
     ThreadData,
     ThreadEvent,
     ThreadListResponse,
@@ -71,6 +72,12 @@ class CompactRequest(BaseModel):
     thread_id: str = Field(..., description="会话 ID")
 
 
+class SkillRequest(BaseModel):
+    thread_id: str = Field(..., description="会话 ID")
+    name: str = Field(..., min_length=1, description="技能名，取自 GET /chat/skills")
+    args: str = Field("", description="可选参数，会以 User: <args> 追加在技能正文之后")
+
+
 def _sse(thread_id: str, events: AsyncIterator[BaseModel]) -> StreamingResponse:
     """两种入口共用同一套流外壳：先发 thread 握手，再透传数据面事件。"""
 
@@ -130,6 +137,48 @@ async def chat_compact(payload: CompactRequest) -> Result[CompactionInfo]:
             message="这次没有可压的内容：中段太短（不足两条），或者压完并不比现在更省"
         )
     return Result.success(data=info)
+
+
+@router.post(
+    "/skill",
+    summary="调用一个技能（SSE）",
+    description=(
+        "把技能的 `SKILL.md` 正文作为这一轮的指令发出去（Pi 的 `/skill:<name>` 语义），"
+        "可选参数以 `User: <args>` 追加在末尾。\n\n"
+        "与 `/chat/stream` 的唯一区别是消息从哪来：正文由服务端按该会话的工作区解析、渲染，"
+        "之后走同一条流式管线——**它会进历史**（技能正文必须成为这一轮的指令），"
+        "中断、压缩、排队的表现也完全一致。\n\n"
+        "技能名不存在或正文读不了时，流里带回一条 error 事件。"
+    ),
+    responses={200: {"content": {SSE_MEDIA_TYPE: {}}, "description": "SSE 事件流"}},
+)
+async def chat_skill(payload: SkillRequest) -> StreamingResponse:
+    return _sse(
+        payload.thread_id,
+        get_service().stream_skill(
+            thread_id=payload.thread_id, name=payload.name, args=payload.args
+        ),
+    )
+
+
+@router.get(
+    "/skills",
+    summary="列出可用技能",
+    description=(
+        "列出该工作区能用的技能（只有索引里的元数据，正文由模型按需读取）。\n\n"
+        "**不依赖模型**：技能来自磁盘扫描，没配 LLM_API_KEY 也能列——"
+        "和会话列表、历史一样，属于「读」的那半边。\n\n"
+        "`workspace` 留空用默认工作区（应用所在目录）。"
+    ),
+)
+async def chat_skills(
+    workspace: str = Query("", description="按哪个工作区列举；留空用默认工作区"),
+) -> Result[SkillListResponse]:
+    try:
+        data = get_service().skills(workspace)
+    except InvalidInput as exc:
+        return Result.fail(message=str(exc))
+    return Result.success(data=data)
 
 
 @router.get(
