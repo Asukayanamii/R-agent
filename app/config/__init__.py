@@ -37,6 +37,66 @@ STUB_ENABLED = os.getenv("AGENT_STUB", "").strip() == "1"
 # 排查问题时置 DEBUG 重启即可；级别名写错时退回 INFO。
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 
+CONFIG_WARNINGS: list[str] = []
+"""取值非法的配置项记录（谁退回了默认值、原值是什么），启动时由组合根打出来。
+
+静默退回默认是"改坏了不报错"的那类：窗口填成 "64k" 会被当成默认值用，
+行为跟预期不同却没有任何提示。
+"""
+
+
+def _int_or(raw: str, default: int) -> int:
+    """数值配置：写错、写非正数一律退回默认，并把这件事记下来。"""
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        CONFIG_WARNINGS.append(f"配置值不是整数，已退回默认：{raw!r} → {default}")
+        return default
+    if value <= 0:
+        CONFIG_WARNINGS.append(f"配置值必须为正，已退回默认：{value} → {default}")
+        return default
+    return value
+
+
+def _ratio_or(raw: str, default: float) -> float:
+    """比例配置：只接受 (0, 1]；其余退回默认。"""
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        CONFIG_WARNINGS.append(f"配置值不是小数，已退回默认：{raw!r} → {default}")
+        return default
+    if not 0 < value <= 1:
+        CONFIG_WARNINGS.append(f"配置值必须落在 (0, 1]，已退回默认：{value} → {default}")
+        return default
+    return value
+
+
+# ---- 上下文自动压缩 ----
+# 窗口这个数只能由用户给：provider 一般不报（DeepSeek 的 /v1/models 只有 id/owned_by），
+# 我们也学不来 Pi 那种"生成式模型目录"（没有构建步骤，base_url 可指向任意兼容端点）。
+# 默认取保守的 64k——.env.example 里的 deepseek-chat 正好是 64K；换大窗口模型请显式调大，
+# 启动日志会写明实际用的是哪个值、来自哪里。
+_RAW_WINDOW = os.getenv("LLM_CONTEXT_WINDOW", "").strip()
+LLM_CONTEXT_WINDOW = _int_or(_RAW_WINDOW, 64_000)
+CONTEXT_WINDOW_SOURCE = ".env" if _RAW_WINDOW else "默认值（未配置 LLM_CONTEXT_WINDOW）"
+
+# 关掉就完全回到没有压缩时的行为。
+COMPACT_ENABLED = os.getenv("COMPACT_ENABLED", "1").strip() != "0"
+
+# 触发线 = 窗口 × 该比例。研究共识是 85–90% 偏晚、95% 太晚；Hermes 的 in-loop 默认 50%
+# （为省 token，偏早），0.8 是折中。
+COMPACT_AT = _ratio_or(os.getenv("COMPACT_AT", "").strip(), 0.8)
+
+# 保留的最近原文预算（Pi 的默认值），其余中段摘要掉。
+COMPACT_KEEP_TOKENS = _int_or(os.getenv("COMPACT_KEEP_TOKENS", "").strip(), 20_000)
+
+# 摘要用哪个模型：留空 = 用主模型。填了就单独建一个（小模型更快更便宜）。
+COMPACT_MODEL = os.getenv("COMPACT_MODEL", "").strip()
+
 
 def _resolve(raw: str) -> str:
     """

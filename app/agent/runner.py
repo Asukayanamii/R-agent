@@ -13,9 +13,11 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from app.event.events import (
+    CompactionInfo,
     ErrorData,
     ErrorEvent,
     HistoryMessage,
+    HistoryView,
     InterruptData,
     InterruptEvent,
     MessageEndData,
@@ -55,8 +57,22 @@ class AgentRunner(Protocol):
         """
         ...
 
-    async def history(self, thread_id: str) -> list[HistoryMessage]:
-        """读取既有会话的消息，供前端恢复。不存在的会话返回空列表。"""
+    async def compact(self, thread_id: str) -> CompactionInfo | None:
+        """
+        用户主动压缩一次上下文（等价 `/compact`）。
+
+        与自动压缩的区别：跳过阈值与冷却——用户点了就是要压。消息一条不删，变的只是
+        "发给模型的那份"。没得压（会话还短、中段不足两条）返回 None，由上层说明原因。
+        """
+        ...
+
+    async def history(self, thread_id: str) -> HistoryView:
+        """
+        读取既有会话的消息，供前端恢复。不存在的会话返回空列表。
+
+        压缩只改"发给模型的视图"，所以消息不会被删；返回的 `compaction` 只是分界位置，
+        前端据此插一条分隔线。
+        """
         ...
 
     async def delete_thread(self, thread_id: str) -> None:
@@ -126,8 +142,13 @@ class StubRunner:
         self._pending: dict[str, InterruptData] = {}
         self._history: dict[str, list[HistoryMessage]] = {}
 
-    async def history(self, thread_id: str) -> list[HistoryMessage]:
-        return list(self._history.get(thread_id, []))
+    async def compact(self, thread_id: str) -> CompactionInfo | None:
+        """内存实现没有压缩这回事：一律返回 None（"没得压"）。"""
+        return None
+
+    async def history(self, thread_id: str) -> HistoryView:
+        """内存实现没有压缩这回事：分界恒为 None。"""
+        return HistoryView(messages=list(self._history.get(thread_id, [])))
 
     async def delete_thread(self, thread_id: str) -> None:
         self._pending.pop(thread_id, None)

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.container import get_service
 from app.event.events import (
     BrowseResponse,
+    CompactionInfo,
     HistoryResponse,
     ThreadData,
     ThreadEvent,
@@ -28,6 +29,7 @@ EVENT_DOC = """
 - text_delta：增量文本，累加即得完整回复
 - tool_start / tool_end：工具调用开始与结束，通过 id 配对
 - interrupt：需要人工确认，前端渲染确认 UI 后调 POST /chat/resume
+- compact：上下文已压缩。消息一条没删，只是"发给模型的那份"从这里开始变短了
 - message_end：本条消息结束，携带 message_id 与 usage
 - error：出错，code 与 Result 语义一致
 - done：流结束，必为最后一帧
@@ -63,6 +65,10 @@ class WorkspaceRequest(BaseModel):
     path: str = Field(
         ..., min_length=1, description="工作区目录。绝对路径，或相对应用目录的路径"
     )
+
+
+class CompactRequest(BaseModel):
+    thread_id: str = Field(..., description="会话 ID")
 
 
 def _sse(thread_id: str, events: AsyncIterator[BaseModel]) -> StreamingResponse:
@@ -105,6 +111,27 @@ async def chat_resume(payload: ResumeRequest) -> StreamingResponse:
     )
 
 
+@router.post(
+    "/compact",
+    summary="主动压缩上下文",
+    description=(
+        "把会话中段摘要掉，等价 Claude Code 的 `/compact`。\n\n"
+        "与自动压缩共用同一套逻辑，区别是**跳过阈值与冷却**——用户点了就是要压。"
+        "消息一条不删：变的只是「发给模型的那份」，历史照旧完整。\n\n"
+        "没得压（会话还短、中段不足两条，或压完并不更省）时返回失败并说明原因，"
+        "而不是静默成功。`COMPACT_ENABLED=0` 只关自动压缩，这个接口照常可用"
+        "（与 Pi 的取舍一致）。"
+    ),
+)
+async def chat_compact(payload: CompactRequest) -> Result[CompactionInfo]:
+    info = await get_service().compact(payload.thread_id)
+    if info is None:
+        return Result.fail(
+            message="这次没有可压的内容：中段太短（不足两条），或者压完并不比现在更省"
+        )
+    return Result.success(data=info)
+
+
 @router.get(
     "/history",
     summary="读取会话历史",
@@ -114,10 +141,15 @@ async def chat_history(
     thread_id: str = Query(..., description="会话 ID"),
 ) -> Result[HistoryResponse]:
     service = get_service()
-    messages = await service.history(thread_id)
+    view = await service.history(thread_id)
     pending = await service.pending_interrupts(thread_id)
     return Result.success(
-        data=HistoryResponse(thread_id=thread_id, messages=messages, pending=pending)
+        data=HistoryResponse(
+            thread_id=thread_id,
+            messages=view.messages,
+            pending=pending,
+            compaction=view.compaction,
+        )
     )
 
 

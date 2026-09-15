@@ -22,12 +22,22 @@ _service: ChatService | None = None
 
 async def _build_runner() -> AgentRunner:
     from app.config import (
+        COMPACT_AT,
+        COMPACT_ENABLED,
+        COMPACT_KEEP_TOKENS,
+        COMPACT_MODEL,
+        CONFIG_WARNINGS,
+        CONTEXT_WINDOW_SOURCE,
         LLM_BASE_URL,
+        LLM_CONTEXT_WINDOW,
         LLM_MODEL,
         SQLITE_PATH,
         STUB_ENABLED,
         llm_configured,
     )
+
+    for warning in CONFIG_WARNINGS:
+        logger.warning("配置回退：%s", warning)
 
     if STUB_ENABLED:
         logger.warning("AGENT_STUB=1，对话走桩实现：复读消息、不调模型")
@@ -41,6 +51,21 @@ async def _build_runner() -> AgentRunner:
 
     if llm_configured():
         logger.info("对话走模型：model=%s base_url=%s", LLM_MODEL, LLM_BASE_URL)
+
+    if COMPACT_ENABLED:
+        # 窗口值写进日志、连来源一起写：填错了要能一眼看出来（默认 64k 对大窗口模型偏小）
+        logger.info(
+            "上下文压缩已开启：窗口 %d tokens（来源：%s），超过 %.0f%%（%d）触发，"
+            "保留最近 %d；摘要模型 %s",
+            LLM_CONTEXT_WINDOW,
+            CONTEXT_WINDOW_SOURCE,
+            COMPACT_AT * 100,
+            int(LLM_CONTEXT_WINDOW * COMPACT_AT),
+            COMPACT_KEEP_TOKENS,
+            COMPACT_MODEL or f"跟随主模型（{LLM_MODEL}）",
+        )
+    else:
+        logger.info("上下文压缩已关闭（COMPACT_ENABLED=0）")
 
     if SQLITE_PATH:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
