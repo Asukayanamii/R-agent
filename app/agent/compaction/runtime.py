@@ -28,7 +28,7 @@ from app.agent.compaction.policy import (
     trim_middle,
 )
 from app.agent.messages import text_of
-from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.prompts import build_system_prompt
 from app.agent.retry import ainvoke_with_retry
 from app.config import (
     COMPACT_AT,
@@ -77,13 +77,17 @@ async def compact_once(
         return {}
 
     messages = state["messages"]
+    # 提示词要和 call_model 里真正发出去的是同一份：它现在含项目约定与技能索引，
+    # 不带上就会拿"不含静态上下文的旧视图"比"含它的新视图"，估算偏小。
+    workspace = ((config or {}).get("configurable") or {}).get("workspace")
+    prompt = build_system_prompt(workspace)
     trigger = int(LLM_CONTEXT_WINDOW * COMPACT_AT)
     before = estimate(messages, state.get("usage_anchor"))
     if not state.get("usage_anchor"):
         # 没有锚点时粗估的是"消息"，而 system 提示词也是要发出去的：不补上它，
         # 后面的净收益校验就是拿"不含 system 的旧视图"比"含 system 的新视图"，
         # 短会话会被永远判成"没收益"（实测踩到过）。
-        before += rough_tokens(SYSTEM_PROMPT)
+        before += rough_tokens(prompt)
     if not force and before < trigger:
         logger.debug("未到压缩线 thread=%s 估算=%d 触发线=%d", thread_id, before, trigger)
         return {}
@@ -132,7 +136,7 @@ async def compact_once(
         return {}
 
     kept = [messages[0], *messages[cut:]]
-    after = estimate_view(SYSTEM_PROMPT, summary, kept)
+    after = estimate_view(prompt, summary, kept)
 
     note_success(thread_id)
     count = (state.get("compaction") or {}).get("count", 0) + 1

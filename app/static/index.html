@@ -385,6 +385,9 @@
     font-size: 12px;
     color: var(--text-faint);
     margin-top: 2px;
+    /* 命令的结果可能是多行的（/skills 的清单），换行要保留 */
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   /* 上下文压缩分隔线：线上面的消息在发给模型时已换成摘要，界面上原文照旧完整 */
@@ -987,6 +990,8 @@ async function streamEvents(path, body, ctx) {
 
 const streamChat = (message, threadId, ctx) =>
   streamEvents("/chat/stream", { message, thread_id: threadId }, ctx);
+const streamSkill = (name, args, threadId, ctx) =>
+  streamEvents("/chat/skill", { thread_id: threadId, name, args }, ctx);
 const streamResume = (threadId, value, ctx) =>
   streamEvents("/chat/resume", { thread_id: threadId, value }, ctx);
 
@@ -1397,11 +1402,21 @@ function addNote(text) {
   toBottom();
 }
 
+/* 技能调用的消息里是整份 SKILL.md（几百行），界面只显示当初那条命令——
+   重开会话时历史里存的也是这条消息，两边显示得一致。 */
+function userFacingText(text) {
+  const head = /^<skill name="([^"]+)"[^>]*>/.exec(text || "");
+  if (!head) return text;
+  const args = /\n\nUser: ([\s\S]*)$/.exec(text);
+  return `/skill:${head[1]}${args && args[1].trim() ? " " + args[1].trim() : ""}`;
+}
+
 function addUserTurn(text) {
+  const shown = userFacingText(text);
   const turn = el("div", "turn user");
   const body = el("div", "body");
-  body.appendChild(el("div", "user-bubble", text));
-  addActions(body, () => text);
+  body.appendChild(el("div", "user-bubble", shown));
+  addActions(body, () => shown);
   turn.appendChild(body);
   list.appendChild(turn);
   toBottom();
@@ -1751,33 +1766,10 @@ function finishTurn(ctx) {
   ctx.interrupted();
 }
 
-async function send(text, fromOutbox = false) {
-  const message = (text ?? input.value).trim();
-  if (!message) return;
-  // 斜杠开头的一律当命令处理：不进对话历史，也不排进待发送队列。
-  // 例外是"成句"的输入（带空格且不是已知命令）——那多半是真要问的话，比如
-  // "/etc/hosts 里有什么"，拦下来会让人没法说话。单 token 的才当作命令误输入。
-  if (message.startsWith("/")) {
-    const word = message.slice(1).trim().split(/\s+/)[0].toLowerCase();
-    const known = COMMANDS.some((c) => c.name === word);
-    if (known || !message.slice(1).trim().includes(" ")) {
-      await runCommand(message);
-      return;
-    }
-  }
-  console.debug("[my-agent] 发送", { threadId, pendingWs, chars: message.length });
-
-  // 运行中（或在等确认）不打断、也不丢消息：排进待发送，本轮结束后自动补发。
-  // 和 Claude Code 一样：Enter 是排队；要停下当前这轮用停止按钮 / Esc。
-  if (!fromOutbox && (busy || threadPending())) {
-    outbox.push(message);
-    outboxThread = threadId;
-    input.value = "";
-    input.style.height = "auto";
-    renderOutbox();
-    return;
-  }
-
+/* 一轮的公共外壳：建会话（含绑定工作区）、占位、跑流、收尾。
+   message 是界面上显示的那条（技能调用显示命令本身，不显示整份正文）；
+   call 决定走哪个入口。 */
+async function runTurn(message, call) {
   busy = true;
   setRunButton(true);
 
@@ -1807,7 +1799,7 @@ async function send(text, fromOutbox = false) {
   const ctx = newTurn();
   try {
     currentRun = new AbortController();
-    await streamChat(message, threadId, ctx);
+    await call(threadId, ctx);
   } catch (err) {
     handleStreamError(err, ctx);
   } finally {
@@ -1819,6 +1811,37 @@ async function send(text, fromOutbox = false) {
     input.focus();
     await drainOutbox();
   }
+}
+
+async function send(text, fromOutbox = false) {
+  const message = (text ?? input.value).trim();
+  if (!message) return;
+  // 斜杠开头的一律当命令处理：不进对话历史，也不排进待发送队列。
+  // 例外是"成句"的输入（带空格且不是已知命令）——那多半是真要问的话，比如
+  // "/etc/hosts 里有什么"，拦下来会让人没法说话。单 token 的才当作命令误输入。
+  // `/skill:<名字> 参数` 带空格也算命令：那是技能调用，不是给人看的句子。
+  if (message.startsWith("/")) {
+    const word = message.slice(1).trim().split(/\s+/)[0].toLowerCase();
+    const known = COMMANDS.some((c) => c.name === word) || word.startsWith("skill:");
+    if (known || !message.slice(1).trim().includes(" ")) {
+      await runCommand(message);
+      return;
+    }
+  }
+  console.debug("[my-agent] 发送", { threadId, pendingWs, chars: message.length });
+
+  // 运行中（或在等确认）不打断、也不丢消息：排进待发送，本轮结束后自动补发。
+  // 和 Claude Code 一样：Enter 是排队；要停下当前这轮用停止按钮 / Esc。
+  if (!fromOutbox && (busy || threadPending())) {
+    outbox.push(message);
+    outboxThread = threadId;
+    input.value = "";
+    input.style.height = "auto";
+    renderOutbox();
+    return;
+  }
+
+  await runTurn(message, (tid, ctx) => streamChat(message, tid, ctx));
 }
 
 async function resume(value) {
@@ -2130,16 +2153,52 @@ document.getElementById("logBtn").onclick = (e) => {
    ============================================================ */
 const COMMANDS = [
   { name: "compact", desc: "把中段摘要掉，消息一条不删" },
+  { name: "skills", desc: "列出这个工作区可用的技能" },
 ];
 
 const cmdsEl = document.getElementById("cmds");
 let cmdItems = [];
 let cmdPick = 0;
 
+/* 技能清单来自服务端发现（磁盘上的 SKILL.md），**不在这里写死**：
+   换工作区、新增一个技能目录，补全都该跟着变。key 是取清单时用的工作区。 */
+let skillItems = [];
+let skillItemsKey = null;
+let skillFetching = false;
+
+async function refreshSkills(force = false) {
+  const ws = activeWorkspace();
+  if (!force && skillItemsKey === ws) return skillItems;
+  skillItemsKey = ws;
+  skillFetching = true;
+  try {
+    const res = await fetch(`/chat/skills?workspace=${encodeURIComponent(ws)}`);
+    const body = await res.json();
+    skillItems = body.code === 0 ? body.data.skills || [] : [];
+  } catch (err) {
+    // 拿不到就当没有：补全缺几项不该弹错误框；/skills 会给出明确回报
+    skillItems = [];
+    console.debug("[my-agent] 技能清单读取失败", err);
+  } finally {
+    skillFetching = false;
+  }
+  return skillItems;
+}
+
 function cmdMatches() {
   const text = input.value;
   if (!text.startsWith("/") || text.includes("\n")) return [];
   const word = text.slice(1).trim().split(/\s+/)[0].toLowerCase();
+  // `/skill:` 后面的补全跟着服务端的发现结果走
+  if (word.startsWith("skill:")) {
+    const prefix = word.slice("skill:".length);
+    if (skillItemsKey !== activeWorkspace() && !skillFetching) {
+      void refreshSkills().then(renderCmds);
+    }
+    return skillItems
+      .filter((s) => s.name.startsWith(prefix))
+      .map((s) => ({ name: "skill:" + s.name, desc: s.description }));
+  }
   return COMMANDS.filter((c) => c.name.startsWith(word));
 }
 
@@ -2170,9 +2229,11 @@ function closeCmds() {
   cmdsEl.innerHTML = "";
 }
 
-/* 命令一律不进对话流：认不出来的就地说明，并把输入选回来方便改 */
+/* 命令一律不进对话流：认不出来的就地说明，并把输入选回来方便改。
+   `/skill:<名字>` 是有意的例外——它把技能正文当这一轮的指令发出去，所以会进历史。 */
 async function runCommand(text) {
-  const name = text.trim().slice(1).trim().split(/\s+/)[0].toLowerCase();
+  const parts = text.trim().slice(1).trim().split(/\s+/);
+  const name = (parts[0] || "").toLowerCase();
   closeCmds();
   if (name === "compact") {
     input.value = "";
@@ -2180,9 +2241,77 @@ async function runCommand(text) {
     await compactContext();
     return;
   }
+  if (name === "skills") {
+    input.value = "";
+    input.style.height = "auto";
+    await listSkills();
+    return;
+  }
+  if (name.startsWith("skill:")) {
+    const skillName = name.slice("skill:".length);
+    if (!skillName) {
+      addNote("用法：/skill:<技能名> [参数]；用 /skills 看这个工作区有哪些技能。");
+      return;
+    }
+    input.value = "";
+    input.style.height = "auto";
+    await runSkill(skillName, parts.slice(1).join(" "));
+    return;
+  }
   addNote(`未知命令：/${name}（输入 / 看可用命令）`);
   input.focus();
   input.select();
+}
+
+/* 技能调用：正文由服务端按工作区渲染并发出，界面上只显示这条命令本身。 */
+async function runSkill(name, args) {
+  if (busy) {
+    addNote("正在生成，等这一轮结束再调用技能。");
+    return;
+  }
+  if (threadPending()) {
+    addNote("有等待确认的操作，先处理它再调用技能。");
+    return;
+  }
+  const label = `/skill:${name}${args ? " " + args : ""}`;
+  await runTurn(label, (tid, ctx) => streamSkill(name, args, tid, ctx));
+}
+
+/* /skills：列出当前工作区能用的技能。清单来自服务端扫描，前端不写死。 */
+async function listSkills() {
+  const ws = activeWorkspace();
+  addNote("正在读取技能…");
+  try {
+    const res = await fetch(`/chat/skills?workspace=${encodeURIComponent(ws)}`);
+    const body = await res.json();
+    if (body.code !== 0) {
+      showError(body.message || "读取技能失败");
+      return;
+    }
+    const items = body.data.skills || [];
+    skillItems = items; // 顺手刷新补全用的清单
+    skillItemsKey = ws;
+    if (!items.length) {
+      addNote(
+        `这个工作区还没有技能（${body.data.workspace}）。\n` +
+          "放一个 <工作区>/.my_agent/skills/<名字>/SKILL.md 就有了，" +
+          "也可以放进全局库 ~/.my_agent/skills。"
+      );
+      return;
+    }
+    addNote(
+      `${items.length} 个技能（${body.data.workspace}）：\n` +
+        items
+          .map(
+            (s) =>
+              `/skill:${s.name}  ${s.manual_only ? "[仅手动] " : ""}${s.scope} · ${s.description}`
+          )
+          .join("\n") +
+        "\n\n用 /skill:<名字> [参数] 直接调用。"
+    );
+  } catch (err) {
+    showError(`读取技能失败：${err.message || err}`);
+  }
 }
 
 /* 主动压缩：与自动压缩共用后端逻辑，区别只是跳过阈值与冷却。

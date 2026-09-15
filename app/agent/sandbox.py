@@ -10,11 +10,12 @@
 **信任边界是工作区**（`app.agent.runtime.current_workspace`），不是会话。
 同一个工作区的所有对话共享同一份授权；换工作区就是换了一层边界。
 
-三种结果：
+四种结果：
 
 1. 工作区内且未命中禁区  → 直接放行
 2. 命中 deny 列表        → **硬阻断，永不提示**。绝对禁区不能靠"点允许"绕过
-3. 工作区外              → **interrupt 询问**，四个选项见 `OPTIONS`
+3. 受信只读根内、且是读  → 直接放行（应用自己配的库，见 `_trusted_read_roots`）
+4. 工作区外              → **interrupt 询问**，四个选项见 `OPTIONS`
 
 授权有三层来源，逐层查找：
 
@@ -38,7 +39,7 @@ from pathlib import Path
 from langgraph.types import interrupt
 
 from app.agent.runtime import current_workspace, workspace_relative
-from app.config import PROJECT_ROOT
+from app.config import CONFIG_DIR, PROJECT_ROOT, SKILLS_DIR, SKILLS_ENABLED
 from app.exceptions import SandboxDenied
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,6 @@ logger = logging.getLogger(__name__)
 READ = "read"
 WRITE = "write"
 
-CONFIG_DIR = ".my_agent"
 CONFIG_FILE = "sandbox.json"
 
 # 绝对禁区：命中即硬阻断，永不提示。规则按"最坏情况"设，宁可多拦。
@@ -179,6 +179,26 @@ def absolute(raw: str) -> Path:
     return (candidate if candidate.is_absolute() else workspace / candidate).resolve()
 
 
+def _trusted_read_roots() -> tuple[Path, ...]:
+    """
+    受信只读根：应用自己配置的、**读**不需要授权的目录。目前只有全局技能库。
+
+    技能是应用自己的库，不是用户临时授予的权限；模型照索引去读技能正文时每读一个就弹一次
+    卡片，等于把技能功能做成不可用。写入仍然要授权，禁区优先级也仍高于它（见
+    `guard_path` 的判断顺序）。
+    """
+    if not SKILLS_ENABLED or not SKILLS_DIR:
+        return ()
+    try:
+        return (Path(SKILLS_DIR).resolve(),)
+    except OSError:
+        return ()
+
+
+def _in_trusted_read_root(path: Path) -> bool:
+    return any(path == root or root in path.parents for root in _trusted_read_roots())
+
+
 def guard_path(raw: str, mode: str) -> Path:
     """
     解析并检查路径。允许则返回绝对路径，否则抛 SandboxDenied。
@@ -198,6 +218,10 @@ def guard_path(raw: str, mode: str) -> Path:
     if target == workspace or workspace in target.parents:
         # 工作区内：沙箱的常规路径，不打 INFO，免得把日志淹掉
         logger.debug("工作区内放行：%s %s", MODE_TEXT[mode], _label(target))
+        return target
+
+    if mode == READ and _in_trusted_read_root(target):
+        logger.debug("受信只读根放行：%s", target.as_posix())
         return target
 
     if _covers(target, mode):

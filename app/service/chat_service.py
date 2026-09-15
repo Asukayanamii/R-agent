@@ -16,6 +16,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from app.agent.runner import AgentRunner
+from app.agent.skills import find_skill, load_skills, render_skill_invocation
 from app.config import PROJECT_ROOT
 from app.dao.thread_index_dao import ThreadIndexDao
 from app.dao.workspace_dao import WorkspaceDao
@@ -29,6 +30,8 @@ from app.event.events import (
     InterruptEvent,
     MessageEndData,
     MessageEndEvent,
+    SkillInfo,
+    SkillListResponse,
     ThreadSummary,
 )
 from app.models.entities import ThreadRecord, WorkspaceRecord
@@ -56,6 +59,43 @@ class ChatService:
         return None
 
     async def stream(self, thread_id: str, message: str) -> AsyncIterator[BaseModel]:
+        """跑一轮普通对话：标题就用这条消息。"""
+        async for event in self._stream(thread_id, message=message, title=message):
+            yield event
+
+    async def stream_skill(
+        self, thread_id: str, name: str, args: str = ""
+    ) -> AsyncIterator[BaseModel]:
+        """
+        跑一轮"技能调用"（等价 `/skill:<name>`）。
+
+        技能正文由服务端按该会话的工作区解析、渲染成一条用户消息，再走与普通消息**完全相同**
+        的管线——所以它会进历史（正文必须成为这一轮的指令），中断、压缩、排队的行为也一致。
+        索引标题用的是命令本身：正文可能几百行，当标题会把侧边栏撑爆。
+        """
+        workspace = await self._workspace(thread_id)
+        skill = find_skill(workspace or PROJECT_ROOT, name)
+        if skill is None:
+            raise InvalidInput(
+                f"没有名为 {name} 的技能（输入 /skills 看可用的）。技能放在 "
+                f"<工作区>/.my_agent/skills/<名字>/SKILL.md，或全局库 ~/.my_agent/skills 里。"
+            )
+        args = args.strip()
+        title = f"/skill:{skill.name}" + (f" {args}" if args else "")
+        logger.info("技能调用 thread=%s 技能=%s（%s）", thread_id, skill.name, skill.scope)
+        async for event in self._stream(
+            thread_id, message=render_skill_invocation(skill, args), title=title
+        ):
+            yield event
+
+    async def _stream(
+        self, thread_id: str, *, message: str, title: str
+    ) -> AsyncIterator[BaseModel]:
+        """
+        一轮对话的公共路径。两个入口（普通消息 / 技能调用）只差消息与标题从哪来。
+
+        标题单独传而不是从消息推：技能调用的消息是整份 `SKILL.md`。
+        """
         pending = await self._runner.pending_interrupts(thread_id)
         if pending:
             # 用户绕过了确认、直接又发了一条消息。这里不能只回一句"请先调用
@@ -90,9 +130,9 @@ class ChatService:
             ):
                 yield event
         except asyncio.CancelledError:
-            self._schedule_settle(thread_id, title=message)
+            self._schedule_settle(thread_id, title=title)
             raise
-        await self._record(thread_id, title=message)
+        await self._record(thread_id, title=title)
 
     async def resume(self, thread_id: str, value: str) -> AsyncIterator[BaseModel]:
         workspace = await self._workspace(thread_id)
@@ -243,6 +283,38 @@ class ChatService:
 
     async def history(self, thread_id: str) -> HistoryView:
         return await self._runner.history(thread_id)
+
+    def skills(self, workspace: str = "") -> SkillListResponse:
+        """
+        列出该工作区可用的技能。
+
+        与 `browse` 一样**不受沙箱约束**：这是用户在问"我这儿有哪些技能"，沙箱限制的是
+        agent，不是用户。也**不依赖模型**——技能是磁盘扫描的结果，没配 key 照样能列。
+        """
+        target = PROJECT_ROOT
+        if workspace.strip():
+            candidate = Path(workspace.strip()).expanduser()
+            if not candidate.is_absolute():
+                candidate = PROJECT_ROOT / candidate
+            target = candidate.resolve()
+            if not target.is_dir():
+                raise InvalidInput(f"不是目录：{target.as_posix()}")
+
+        found = load_skills(target)
+        logger.debug("列出技能 workspace=%s 共%d个", target.as_posix(), len(found))
+        return SkillListResponse(
+            workspace=target.as_posix(),
+            skills=[
+                SkillInfo(
+                    name=skill.name,
+                    description=skill.description,
+                    scope=skill.scope,
+                    path=skill.path.as_posix(),
+                    manual_only=skill.manual_only,
+                )
+                for skill in found
+            ],
+        )
 
     async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
         """

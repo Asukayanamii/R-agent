@@ -38,6 +38,10 @@ cp .env.example .env
 | `COMPACT_AT` | `0.8` | 触发线 = 窗口 × 该比例 |
 | `COMPACT_KEEP_TOKENS` | `20000` | 压缩时保留的最近原文预算（tokens），更早的中段摘要掉 |
 | `COMPACT_MODEL` | 空 | 摘要用哪个模型；留空跟随 `LLM_MODEL`。填个小模型更快更便宜 |
+| `SKILLS_ENABLED` | `1` | `0` 关掉技能发现与沙箱的受信只读根 |
+| `SKILLS_DIR` | `~/.my_agent/skills` | 全局技能库；同时是沙箱的**受信只读根**（只读放行） |
+| `AGENTS_MD_ENABLED` | `1` | `0` 关掉 `AGENTS.md` / `CLAUDE.md` 注入 |
+| `AGENTS_ANCESTORS` | `1` | `0` 只读全局与工作区根，不向上遍历祖先目录 |
 
 ## 启动
 
@@ -54,12 +58,14 @@ python -m uvicorn app.main:app --reload --port 8000
 | --- | --- | --- |
 | POST | `/chat/stream` | 发起一轮对话，SSE 流 |
 | POST | `/chat/resume` | 带着用户选择，从 `interrupt` 处继续，SSE 流 |
+| POST | `/chat/skill` | 调用一个技能（等价 `/skill:<名字>`），SSE 流；技能名不存在时流里回一条 `error` |
 | POST | `/chat/compact` | 主动压缩一次上下文（等价 `/compact`）；跳过阈值与冷却，消息不删 |
 | GET | `/chat/history` | 读取既有会话消息，供前端恢复 |
 | GET | `/chat/threads` | 列出既有会话，按最近更新倒序；一并给出默认工作区 |
 | DELETE | `/chat/threads/{id}` | 删除会话，硬删；不存在的会话静默通过（幂等） |
 | PUT | `/chat/workspace` | 把会话绑定到工作区，即沙箱的信任边界（新会话诞生时写一次） |
 | GET | `/chat/browse` | 列出目录，供挑选工作区 |
+| GET | `/chat/skills` | 列出该工作区可用的技能；**不依赖模型**，没配 key 也能列 |
 
 非流式接口走 `Result` 包装（`{code, message, data}`，`code=0` 为成功）。
 
@@ -208,6 +214,61 @@ python -m uvicorn app.main:app --reload --port 8000
 - 重试耗尽后抛出去的是**最后一次的异常原文**，两个异常出口不变；每次重试都会先写一行
   WARNING（第几次、等多久、原文），所以日志里能看出"这次慢是因为在重试"。
 
+## 技能与项目约定
+
+两样都只做**提示词注入**，没有任何检索：索引全量常驻系统提示词，匹不匹配交给模型自己判断
+（技能描述本来就是照「什么时候用它」写的）。省掉的是一层基建——没有向量库、没有嵌入模型、
+也不会出现"检索没召回，模型压根不知道有这个能力"这种静默失败。代价是索引占一点 token，
+几十个技能的量级是一两千。
+
+### 技能（Skills）
+
+技能是一个含 `SKILL.md` 的目录（也可以直接在技能根下放一个散装 `.md`）：frontmatter 写名字
+与描述，正文写步骤、脚本用法与参考资料。
+
+```markdown
+---
+name: pdf-tools
+description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时使用。
+---
+
+1. `scripts/extract.py <文件>` 取正文
+2. 表格加 `--tables`，字段说明见 `references/format.md`
+```
+
+| 来源 | 路径 | 作用域 |
+| --- | --- | --- |
+| 项目 | `<工作区>/.my_agent/skills/` | 当前工作区 |
+| 全局 | `SKILLS_DIR`（默认 `~/.my_agent/skills`） | 所有工作区 |
+
+- **进提示词的只有名字、描述、路径**，正文由模型用 `read` 按需读取（渐进披露）。技能里引用的
+  相对路径以 `SKILL.md` 所在目录为基准。
+- **同名冲突项目优先**，落败方在日志里记一条——"为什么改了这个技能没生效"要能查到答案。
+- 校验宽松：`name`/`description` 不合规范只在日志告警，仍然加载；只有**缺 description** 才
+  不加载（没有描述就无法判断何时该用它）。
+- `disable-model-invocation: true` 的技能不进提示词索引，只能 `/skill:<名字>` 手动调用。
+- 加完技能**下一条消息就生效**（按 `mtime` 感知，不用重启）；每轮只 stat，内容没变不重读。
+- **agent 也能建技能**：工作区里的技能目录在沙箱内、可读可写，可以直接让它写一个。
+- 斜杠命令：`/skills` 列清单，`/skill:<名字> [参数]` 强制调用（把 `SKILL.md` 正文作为这一轮
+  的指令发出去，参数以 `User: <参数>` 附在末尾）。它**会进历史**——与 `/compact` 那类
+  "命令不是消息"的约定不同；界面上仍只显示这条命令本身，不显示整份正文。
+
+### 项目约定（AGENTS.md）
+
+同一个目录里取**一个**文件：`AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md`
+（override 顶掉同目录另外两个，其他目录照常层叠）。加载顺序是**外 → 内**：
+
+1. 全局：`~/.my_agent/AGENTS.md`
+2. 祖先链：从工作区向上，**到含 `.git` 的目录为止**（仓库边界之外跟这个项目没关系）
+3. 工作区根
+
+内容**直接进提示词**（不像技能那样按需读）：约定是每轮都该生效的短文本，让模型自己判断
+"要不要读"只会漏。单文件超过 64KB 会截断，并**在提示词里标注截断**（不静默丢一半）。
+`AGENTS_ANCESTORS=0` 关掉向上遍历，`AGENTS_MD_ENABLED=0` 整个关掉。
+
+> 顺序本身就是信号：通用的在前、具体的在后，越靠近工作区越靠后。每条约定在提示词里都带着
+> 自己的来源路径，日志里也列了这次注入了哪几份。
+
 ## 工作区
 
 **信任边界是工作区，不是会话。** 同一个工作区的所有对话共享同一份沙箱授权。
@@ -240,6 +301,7 @@ python -m uvicorn app.main:app --reload --port 8000
 | --- | --- |
 | 工作区内、未命中禁区 | 直接放行 |
 | 命中绝对禁区 | **硬阻断，永不提示** |
+| 受信只读根（技能库 `SKILLS_DIR`） | **读**直接放行——那是应用自己的库，不是用户临时授予的权限；写仍要授权，禁区优先级仍更高 |
 | 工作区之外 | **弹确认卡片询问** |
 
 绝对禁区：`.env`、`*.pem`、`*.key`、`*id_rsa*`、`.git/`、`data/`。
@@ -365,7 +427,9 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 | `messages.py` | 消息与历史重建（纯函数，能单独测） |
 | `models.py` | 模型构建（正常 / 摘要 / 没配 key 时的占位） |
 | `retry.py` | 上游调用失败的重试（错误分类 + 退避） |
-| `prompts.py` | 系统提示词（人格 + 工具选择策略） |
+| `prompts.py` | 系统提示词：人格 + 工具策略，并按工作区拼上约定与技能索引 |
+| `skills.py` | 技能：发现、解析、渲染（索引常驻 + 正文按需，无检索） |
+| `agents_md.py` | 项目约定（AGENTS.md / CLAUDE.md）的分层发现与注入 |
 | `runner.py` | `AgentRunner` 协议与 `StubRunner` |
 | `sandbox.py` / `runtime.py` / `tools/` | 沙箱、工作区 ContextVar、工具本体（`tools/diff.py` 只负责 edit 的差异数据） |
 
@@ -412,6 +476,8 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 | 要改什么 | 改哪里 |
 | --- | --- |
 | 加工具 | `app/agent/tools/` 下新建文件，在 `__init__.py` 的 `TOOLS` 里注册 |
+| 加技能 | `<工作区>/.my_agent/skills/<名字>/SKILL.md`，或全局库 `~/.my_agent/skills`；**不用改代码** |
+| 加项目约定 | 工作区（或任一祖先目录）放 `AGENTS.md`；同目录要覆盖它就用 `AGENTS.override.md` |
 | 加需审批的工具 | 把工具名加进同文件的 `APPROVAL_REQUIRED` |
 | 换存储 | `app/container.py` 里换 checkpointer |
 | 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在容器里替换 |

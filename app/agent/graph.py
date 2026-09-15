@@ -18,7 +18,7 @@ from app.agent.compaction.policy import with_summary
 from app.agent.compaction.runtime import COMPACT_NODE, compact_once
 from app.agent.messages import usable_compaction
 from app.agent.models import build_model, build_summary_model
-from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.prompts import build_system_prompt
 from app.agent.retry import ainvoke_with_retry
 from app.agent.tool_calls import run_tools
 from app.agent.tools import TOOLS
@@ -111,9 +111,12 @@ def build_graph(
         """
         messages = state["messages"]
         compaction = state.get("compaction") or {}
-        prompt = SYSTEM_PROMPT
+        config = get_config()
+        # 静态上下文（项目约定 + 技能索引）随工作区变，所以每轮按当前工作区重拼。
+        # 同一工作区内它是稳定的：变了才动前缀缓存，见 prompts.build_system_prompt。
+        prompt = build_system_prompt((config.get("configurable") or {}).get("workspace"))
         if usable_compaction(compaction, len(messages)):
-            prompt = with_summary(SYSTEM_PROMPT, compaction["summary"])
+            prompt = with_summary(prompt, compaction["summary"])
             messages = [messages[0], *messages[compaction["from_index"] :]]
         elif compaction:
             logger.warning(
@@ -125,8 +128,8 @@ def build_graph(
         response = await ainvoke_with_retry(
             model_with_tools,
             [{"role": "system", "content": prompt}, *messages],
-            config=get_config(),
-            thread_id=(get_config().get("configurable") or {}).get("thread_id") or "-",
+            config=config,
+            thread_id=(config.get("configurable") or {}).get("thread_id") or "-",
             label="模型调用",
         )
         meta = getattr(response, "usage_metadata", None) or {}

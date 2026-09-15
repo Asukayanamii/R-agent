@@ -234,6 +234,30 @@ class BrowseResponse(BaseModel):
     dirs: list[BrowseEntry]
 
 
+class SkillInfo(BaseModel):
+    """
+    一个可用技能（`/skills` 的列表项）。
+
+    这里只有**索引里的元数据**：正文不在协议里，由模型按需读文件（渐进披露的第一层）。
+    `manual_only` 的技能不进系统提示词的索引，只能用 `/skill:<name>` 手动调用。
+    """
+
+    name: str
+    description: str = Field(..., description="决定模型会不会去读正文，来自 frontmatter")
+    scope: str = Field(..., description="来源：项目 / 全局")
+    path: str = Field(..., description="SKILL.md 的绝对路径")
+    manual_only: bool = Field(
+        False, description="disable-model-invocation：不进索引，只能手动调用"
+    )
+
+
+class SkillListResponse(BaseModel):
+    """`/skills` 的结果。技能来源随工作区变，所以把用的是哪个工作区一并给出。"""
+
+    workspace: str = Field(..., description="按哪个工作区列的技能")
+    skills: list[SkillInfo] = Field(default_factory=list)
+
+
 class HistoryResponse(BaseModel):
     """打开旧会话时要恢复的东西：消息 + 还挂着的待确认项 + 压缩分界。"""
 
