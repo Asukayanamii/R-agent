@@ -7,12 +7,14 @@
 - `brief`：日志用的一行摘要（工具参数与返回值可能是很长的字典或多行文本）
 - `error_message` / `unanswered_calls`：失败回执的构造、悬空调用的判定
 - `to_history_call` / `to_interrupt_data` / `title_of` / `build_history`：读路径 → 协议形状
+- `to_diff`：工具 artifact（结构化差异）→ 协议形状，实时与历史两条路共用
 - `usable_compaction`：这条压缩记录还能不能对着这份消息列表用
 """
 
 import logging
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from pydantic import ValidationError
 
 from app.event.events import (
     CompactionInfo,
@@ -20,6 +22,7 @@ from app.event.events import (
     HistoryToolCall,
     HistoryView,
     InterruptData,
+    ToolDiff,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,6 +89,22 @@ def usable_compaction(compaction: dict, total: int) -> bool:
     return isinstance(index, int) and 1 <= index < total
 
 
+def to_diff(artifact: object) -> ToolDiff | None:
+    """
+    把工具留下的 artifact 翻成协议形状（目前只有 edit 的结构化差异用它）。
+
+    形状不对就当没有：这是**展示用**的数据，不能因为它让整轮对话失败，但也不能装作
+    没发生——留一行 WARNING。别的工具（artifact 为 None）走到这里直接返回。
+    """
+    if not isinstance(artifact, dict) or "lines" not in artifact:
+        return None
+    try:
+        return ToolDiff.model_validate(artifact)
+    except ValidationError as exc:
+        logger.warning("工具的 artifact 形状不对，忽略差异：%s", exc)
+        return None
+
+
 def to_history_call(call: dict, result: object) -> HistoryToolCall:
     """
     把一次调用与它的结果配成历史里的一张工具卡片。
@@ -109,6 +128,7 @@ def to_history_call(call: dict, result: object) -> HistoryToolCall:
         state="failed" if failed else "ok",
         result=None if failed else text,
         error=text if failed else None,
+        diff=None if failed else to_diff(getattr(result, "artifact", None)),
     )
 
 

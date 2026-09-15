@@ -4,6 +4,7 @@ from langchain_core.tools import tool
 
 from app.agent.sandbox import WRITE, guard_path
 from app.agent.tools.common import fail, rel
+from app.agent.tools.diff import build_diff
 from app.exceptions import SandboxDenied
 
 
@@ -24,13 +25,13 @@ def fuzzy_span(lines: list[str], wanted: list[str]) -> tuple[int, int] | None:
     return None
 
 
-@tool
+@tool(response_format="content_and_artifact")
 async def edit(
     path: str,
     old_string: str,
     new_string: str,
     replace_all: bool = False,
-) -> str:
+) -> tuple[str, dict | None]:
     """
     在文件里精确替换一段文本。
 
@@ -53,7 +54,11 @@ async def edit(
         fail(f"{rel(target)} 不是文件")
 
     try:
-        raw = target.read_text(encoding="utf-8")
+        # 必须用 newline="" 读：`Path.read_text()` 是通用换行模式，会把 CRLF 先吃成 LF，
+        # 下面的 uses_crlf 就永远是假——"保留原换行风格"会变成死代码，改一处就把整个
+        # CRLF 文件的行尾翻掉（实测踩到）。
+        with target.open(encoding="utf-8", newline="") as handle:
+            raw = handle.read()
     except OSError as exc:
         fail(f"读取失败：{exc}")
 
@@ -98,4 +103,6 @@ async def edit(
         fail(f"写入失败：{exc}")
 
     places = count if replace_all else 1
-    return f"已修改 {rel(target)}（{strategy}，替换 {places} 处）"
+    # 返回值分两路：正文是模型看到的那一句话，差异数据只给界面用（模型刚改完，不需要
+    # 再把改动读一遍——那会一直占着上下文）。见 tools/diff.py 的模块说明。
+    return f"已修改 {rel(target)}（{strategy}，替换 {places} 处）", build_diff(text, updated)

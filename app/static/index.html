@@ -32,6 +32,9 @@
     --danger-solid-fg: #ffffff;
     --ok: #15803d;
     --link: #1d4ed8;
+    --diff-add-bg: #e6ffec;
+    --diff-del-bg: #ffebe9;
+    --diff-fold-bg: #f6f8fa;
   }
   :root[data-theme="dark"] {
     --bg: #1a1a1a;
@@ -57,6 +60,9 @@
     --danger-solid-fg: #ffffff;
     --ok: #4ade80;
     --link: #7aa2f7;
+    --diff-add-bg: #14261c;
+    --diff-del-bg: #2a1618;
+    --diff-fold-bg: #232323;
   }
 
   :root {
@@ -390,9 +396,6 @@
     padding-top: 6px;
   }
   .compact summary { cursor: pointer; }
-  /* 刚压缩完时短暂高亮一下：重放历史会停在底部，光滚过去容易看漏 */
-  .compact.flash { border-top-color: var(--warn); }
-  .compact.flash > div:first-child { color: var(--warn); font-weight: 600; }
   .compact .csum {
     margin-top: 6px;
     padding: 8px 10px;
@@ -450,6 +453,54 @@
   .tool.open .tool-body { display: block; }
   .tool.fail { border-color: var(--danger-border); }
   .tool.fail .tname { color: var(--danger); }
+  /* 卡片头的路径与增删统计：不展开也看得出改了哪个文件、动了多少 */
+  .tool-head .tpath {
+    font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46%;
+  }
+  .tool-head .tstat {
+    font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums;
+    display: flex; gap: 6px;
+  }
+  .tool-head .tstat .add { color: var(--ok); }
+  .tool-head .tstat .del { color: var(--danger); }
+
+  /* ============ 文件差异 ============
+     结构化数据渲染成行：两列行号 + 增删底色 + 折叠段。改动的行内容按 DOM 文本节点插入
+     （el() 走的是 textContent），文件里带 HTML 也不会被当成标签。 */
+  .diff {
+    margin-top: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: auto;
+    max-height: 420px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.55;
+    background: var(--bg-raise);
+  }
+  .drow { display: flex; }
+  .drow .dn {
+    flex: none; width: 40px; padding-right: 8px; text-align: right;
+    color: var(--text-faint); user-select: none; font-variant-numeric: tabular-nums;
+  }
+  .drow .dm { flex: none; width: 14px; color: var(--text-dim); user-select: none; }
+  .drow .dt { flex: 1; padding-right: 10px; white-space: pre; }
+  .drow.add { background: var(--diff-add-bg); }
+  .drow.add .dm { color: var(--ok); }
+  .drow.del { background: var(--diff-del-bg); }
+  .drow.del .dm { color: var(--danger); }
+  .drow.skip, .drow.more {
+    background: var(--diff-fold-bg); color: var(--text-dim);
+    border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);
+  }
+  .drow.skip .dt, .drow.more .dt { padding-left: 8px; }
+  .dfold {
+    display: block; width: 100%; border: none; border-top: 1px solid var(--border-soft);
+    background: var(--diff-fold-bg); color: var(--link);
+    font: inherit; text-align: left; padding: 5px 10px; cursor: pointer;
+  }
+  .dfold:hover { text-decoration: underline; }
 
   /* ============ 确认卡片 ============ */
   .confirm {
@@ -499,6 +550,7 @@
     font-size: 14px;
   }
   .empty .big { font-size: 22px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .empty .sub { margin-top: 10px; font-size: 12.5px; }
   .empty code {
     font-family: var(--mono);
     font-size: 12.5px;
@@ -531,6 +583,25 @@
     padding: 6px 0;
   }
   textarea::placeholder { color: var(--text-faint); }
+
+  /* ============ 命令菜单 ============
+     输入框里以 / 开头时列出可用命令（Codex 那套：↑↓ 选、Enter 执行、Esc 收起）。
+     键盘操作接在输入框自己的 keydown 上，菜单收起时完全不介入。 */
+  .cmds {
+    display: none;
+    max-width: 760px; margin: 0 auto 8px;
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .06);
+  }
+  .cmds.open { display: block; }
+  .cmd { display: flex; align-items: baseline; gap: 10px; padding: 9px 14px; cursor: pointer; }
+  .cmd .cname { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .cmd .cdesc { font-size: 12.5px; color: var(--text-dim); }
+  .cmd.on { background: var(--bg-hover); }
+  .cmd.on .cname { color: var(--link); font-weight: 600; }
 
   #send {
     width: 34px; height: 34px; flex-shrink: 0;
@@ -728,7 +799,6 @@
       <span class="icon">⌂</span><span class="label" id="wsLabel">工作区</span>
     </button>
     <span class="spacer"></span>
-    <button class="icon-btn" id="compactBtn" title="把中段摘要掉，消息一条不删（等价 /compact）">压缩</button>
     <button class="icon-btn" id="logBtn">事件</button>
   </div>
 
@@ -738,11 +808,12 @@
 
   <div class="composer-wrap">
     <div class="outbox" id="outbox"></div>
+    <div class="cmds" id="cmds"></div>
     <div class="composer">
-      <textarea id="input" rows="1" placeholder="发送消息…"></textarea>
+      <textarea id="input" rows="1" placeholder="发送消息…（输入 / 看命令）"></textarea>
       <button id="send" title="发送">↑</button>
     </div>
-    <div class="hint">Enter 发送 · Shift + Enter 换行</div>
+    <div class="hint">Enter 发送 · Shift + Enter 换行 · 输入 / 看命令</div>
   </div>
 </div>
 
@@ -1296,8 +1367,15 @@ function showEmpty() {
   const box = el("div", "empty");
   box.appendChild(el("div", "big", "今天想聊点什么？"));
   const p = el("div");
-  p.innerHTML = '试试 <code>现在几点了</code> 或 <code>清空 demo 环境的缓存</code>';
+  // 例子对着现有工具集写：读（read）、改（edit）、跑（bash）。早期 demo 留下的
+  // "清空某某环境的缓存"那类示例与这套工具无关，别留在新会话的第一屏。
+  p.innerHTML =
+    '试试 <code>读一下 README，讲讲这个项目怎么跑</code>、' +
+    '<code>把超时改成 60 秒</code>、<code>跑一遍测试</code>';
   box.appendChild(p);
+  const sub = el("div", "sub");
+  sub.innerHTML = '在工作区里读代码、改文件、跑命令；输入 <code>/</code> 看可用命令（<code>/compact</code> 压缩上下文）';
+  box.appendChild(sub);
   list.appendChild(box);
 }
 
@@ -1308,6 +1386,14 @@ function showError(text) {
   const empt = list.querySelector(".empty");
   if (empt) empt.remove();
   list.appendChild(el("div", "errbox", text));
+  toBottom();
+}
+
+/* 中性说明（不是错误）：给命令的结果用——"没得压"这类是正常回答，不该进红色错误框 */
+function addNote(text) {
+  const empt = list.querySelector(".empty");
+  if (empt) empt.remove();
+  list.appendChild(el("div", "note", text));
   toBottom();
 }
 
@@ -1351,7 +1437,57 @@ function makeToolCard(name, args) {
   card.appendChild(head);
   card.appendChild(body);
   head.onclick = () => card.classList.toggle("open");
-  return { card, state, body, args: args || {} };
+  return { card, head, state, body, args: args || {} };
+}
+
+/* ---------- 文件差异 ----------
+   只吃结构化数据（行号 + 增删 + 折叠段），不解析 diff 文本：图形界面要的是能对齐的两列
+   行号，而不是一段字符串。行内容一律走文本节点（el() 用 textContent），文件里带 < >
+   也不会被当成标签。 */
+const DIFF_CAP = 20;
+
+function diffRow(line) {
+  const cls = { add: "add", del: "del", skip: "skip", more: "more" }[line.kind] || "";
+  const row = el("div", cls ? "drow " + cls : "drow");
+  row.appendChild(el("span", "dn", line.old == null ? "" : String(line.old)));
+  row.appendChild(el("span", "dn", line.new == null ? "" : String(line.new)));
+  row.appendChild(el("span", "dm", { add: "+", del: "-", ctx: " " }[line.kind] || ""));
+  const text = line.kind === "skip" ? `⋯ 折叠 ${line.count} 行未变化` : line.text || "";
+  row.appendChild(el("span", "dt", text));
+  return row;
+}
+
+function renderDiff(diff) {
+  if (!diff || !diff.lines || !diff.lines.length) {
+    if (!diff || !diff.truncated) return null;
+    const box = el("div", "diff");
+    box.appendChild(diffRow({ kind: "more", text: "文件过大，未生成差异" }));
+    return box;
+  }
+
+  const box = el("div", "diff");
+  const paint = (expanded) => {
+    box.textContent = "";
+    const shown = expanded ? diff.lines : diff.lines.slice(0, DIFF_CAP);
+    for (const line of shown) box.appendChild(diffRow(line));
+    if (diff.lines.length > shown.length) {
+      const btn = el("button", "dfold", `展开全部（共 ${diff.lines.length} 行）`);
+      btn.onclick = (e) => { e.stopPropagation(); paint(true); };
+      box.appendChild(btn);
+    }
+    if (diff.truncated) {
+      box.appendChild(diffRow({ kind: "more", text: `还有 ${diff.omitted} 行差异未显示（太长了）` }));
+    }
+  };
+  paint(false);
+  return box;
+}
+
+function diffStat(diff) {
+  const box = el("span", "tstat");
+  box.appendChild(el("span", "add", `+${diff.additions}`));
+  box.appendChild(el("span", "del", `−${diff.deletions}`));
+  return box;
 }
 
 /* 三种收尾状态：完成 / 失败 / 未完成（停在待确认上，或那一轮被中断了） */
@@ -1361,12 +1497,24 @@ const TOOL_STATE = {
   pending: { text: "未完成", color: "var(--warn)" },
 };
 
-function finishTool(t, state, output) {
+function finishTool(t, state, output, diff) {
   const look = TOOL_STATE[state] || TOOL_STATE.ok;
   t.state.textContent = look.text;
   t.state.style.color = look.color;
   if (state === "failed") t.card.classList.add("fail");
   t.body.textContent = JSON.stringify(t.args, null, 2) + "\n→ " + (output ?? "");
+
+  const node = renderDiff(diff);
+  if (node && !t.withDiff) {
+    t.withDiff = true;
+    // 头部补上路径与增删统计：卡片收起时也看得出改了哪个文件、动了多少。
+    // 没有行列表时（文件太大没生成差异）不给统计——那会儿的 0 是"不知道"，不是"零改动"。
+    if (t.args && t.args.path) {
+      t.head.insertBefore(el("span", "tpath", String(t.args.path)), t.state);
+    }
+    if (diff.lines && diff.lines.length) t.head.insertBefore(diffStat(diff), t.state);
+    t.body.appendChild(node);
+  }
   t.done = true;
 }
 
@@ -1403,7 +1551,7 @@ function addStaticTurn(role, content, toolCalls = []) {
     const t = makeToolCard(call.name, call.args);
     if (call.state === "failed") finishTool(t, "failed", call.error);
     else if (call.state === "pending") finishTool(t, "pending", call.error || "等待用户确认");
-    else finishTool(t, "ok", call.result);
+    else finishTool(t, "ok", call.result, call.diff);
     body.appendChild(t.card);
   }
 
@@ -1463,7 +1611,7 @@ function newTurn() {
     toolEnd(d) {
       const t = tools[d.id];
       if (!t) return;
-      finishTool(t, d.ok ? "ok" : "failed", d.ok ? d.result : d.error);
+      finishTool(t, d.ok ? "ok" : "failed", d.ok ? d.result : d.error, d.ok ? d.diff : null);
       toBottom();
     },
 
@@ -1606,6 +1754,17 @@ function finishTurn(ctx) {
 async function send(text, fromOutbox = false) {
   const message = (text ?? input.value).trim();
   if (!message) return;
+  // 斜杠开头的一律当命令处理：不进对话历史，也不排进待发送队列。
+  // 例外是"成句"的输入（带空格且不是已知命令）——那多半是真要问的话，比如
+  // "/etc/hosts 里有什么"，拦下来会让人没法说话。单 token 的才当作命令误输入。
+  if (message.startsWith("/")) {
+    const word = message.slice(1).trim().split(/\s+/)[0].toLowerCase();
+    const known = COMMANDS.some((c) => c.name === word);
+    if (known || !message.slice(1).trim().includes(" ")) {
+      await runCommand(message);
+      return;
+    }
+  }
   console.debug("[my-agent] 发送", { threadId, pendingWs, chars: message.length });
 
   // 运行中（或在等确认）不打断、也不丢消息：排进待发送，本轮结束后自动补发。
@@ -1874,11 +2033,29 @@ document.addEventListener("keydown", (e) => {
 });
 
 input.addEventListener("keydown", (e) => {
+  // 菜单开着时先归菜单：↑↓ 选项、Tab/Enter 执行、Esc 收起。收了 Esc 就不再往下传，
+  // 免得同时触发"停止当前这一轮"。
+  if (cmdItems.length) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      cmdPick = (cmdPick + step + cmdItems.length) % cmdItems.length;
+      paintCmds();
+      return;
+    }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCmds(); return; }
+    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+      e.preventDefault();
+      runCommand("/" + cmdItems[cmdPick].name);
+      return;
+    }
+  }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
 input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 190) + "px";
+  renderCmds();
 });
 
 /* 开始一条还没落库的新对话。工作区只记在前端——发第一条消息时才绑到会话上，
@@ -1894,6 +2071,7 @@ function startPendingChat(ws) {
   renderThreads();
   renderWorkspaceChip();
   showEmpty();
+  renderCmds();
   input.focus();
 }
 
@@ -1944,18 +2122,81 @@ document.getElementById("logBtn").onclick = (e) => {
   e.currentTarget.classList.toggle("on", drawer.classList.contains("open"));
 };
 
-/* 主动压缩：与自动压缩共用后端逻辑，区别只是跳过阈值与冷却。
-   压完重放一次历史——分隔线的精确位置由服务端算好，和重开会话走同一条路。 */
-const compactBtn = document.getElementById("compactBtn");
-compactBtn.onclick = async () => {
-  if (busy) return;
-  if (!threadId) {
-    showError("还没有会话：先发一条消息再压缩。");
+/* ============================================================
+   斜杠命令
+
+   输入框里以 / 开头就列出可用命令（Codex 那套：↑↓ 选、Enter/Tab 执行、Esc 收起）。
+   命令不是消息：不进对话历史、不进待发送队列，结果只在这里说明一下。
+   ============================================================ */
+const COMMANDS = [
+  { name: "compact", desc: "把中段摘要掉，消息一条不删" },
+];
+
+const cmdsEl = document.getElementById("cmds");
+let cmdItems = [];
+let cmdPick = 0;
+
+function cmdMatches() {
+  const text = input.value;
+  if (!text.startsWith("/") || text.includes("\n")) return [];
+  const word = text.slice(1).trim().split(/\s+/)[0].toLowerCase();
+  return COMMANDS.filter((c) => c.name.startsWith(word));
+}
+
+function paintCmds() {
+  cmdsEl.innerHTML = "";
+  cmdItems.forEach((c, index) => {
+    const row = el("div", index === cmdPick ? "cmd on" : "cmd");
+    row.appendChild(el("span", "cname", "/" + c.name));
+    row.appendChild(el("span", "cdesc", c.desc));
+    row.onclick = () => runCommand("/" + c.name);
+    cmdsEl.appendChild(row);
+  });
+}
+
+function renderCmds() {
+  // 运行中不给执行命令（压缩要动会话状态），菜单也就不必弹出来
+  cmdItems = busy ? [] : cmdMatches();
+  if (!cmdItems.length) { closeCmds(); return; }
+  if (cmdPick >= cmdItems.length) cmdPick = 0;
+  paintCmds();
+  cmdsEl.classList.add("open");
+}
+
+function closeCmds() {
+  cmdItems = [];
+  cmdPick = 0;
+  cmdsEl.classList.remove("open");
+  cmdsEl.innerHTML = "";
+}
+
+/* 命令一律不进对话流：认不出来的就地说明，并把输入选回来方便改 */
+async function runCommand(text) {
+  const name = text.trim().slice(1).trim().split(/\s+/)[0].toLowerCase();
+  closeCmds();
+  if (name === "compact") {
+    input.value = "";
+    input.style.height = "auto";
+    await compactContext();
     return;
   }
-  compactBtn.disabled = true;
-  const label = compactBtn.textContent;
-  compactBtn.textContent = "压缩中…";
+  addNote(`未知命令：/${name}（输入 / 看可用命令）`);
+  input.focus();
+  input.select();
+}
+
+/* 主动压缩：与自动压缩共用后端逻辑，区别只是跳过阈值与冷却。
+   压完重放一次历史——分隔线的精确位置由服务端算好，和重开会话走同一条路。 */
+async function compactContext() {
+  if (busy) {
+    addNote("正在生成，等这一轮结束再压缩。");
+    return;
+  }
+  if (!threadId) {
+    addNote("还没有会话：先发一条消息再压缩。");
+    return;
+  }
+  addNote("正在压缩上下文…");
   try {
     const res = await fetch("/chat/compact", {
       method: "POST",
@@ -1964,26 +2205,15 @@ compactBtn.onclick = async () => {
     });
     const body = await res.json();
     if (body.code !== 0) {
-      showError(body.message || "压缩失败");
+      // "没得压"是正常结果（会话还短，或压完并不更省），按说明展示
+      addNote(body.message || "压缩失败");
       return;
     }
     await openThread(threadId);
-    // 分隔线在历史中间（常在第四五条那儿），而重放历史会停在底部——把它滚进视野并高亮，
-    // 否则点了压缩的人根本看不到发生了什么
-    const notes = list.querySelectorAll(".compact");
-    const note = notes[notes.length - 1];
-    if (note) {
-      note.scrollIntoView({ block: "center", behavior: "smooth" });
-      note.classList.add("flash");
-      setTimeout(() => note.classList.remove("flash"), 1600);
-    }
   } catch (err) {
     showError(`压缩失败：${err.message || err}`);
-  } finally {
-    compactBtn.disabled = false;
-    compactBtn.textContent = label;
   }
-};
+}
 
 document.getElementById("themeBtn").onclick = () => {
   const root = document.documentElement;

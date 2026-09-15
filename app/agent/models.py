@@ -97,6 +97,9 @@ def build_model(name: str | None = None, max_tokens: int | None = None) -> BaseC
         temperature=0,
         max_tokens=max_tokens,
         streaming=True,  # 关掉流式就没有 text_delta，前端只能等整段回复
+        # SDK 自带的重试关掉：它不记日志、延迟不可控，还会和我们那层叠加次数
+        # （3 × 2 次）。重试统一由 app/agent/retry.py 负责，理由见那里。
+        max_retries=0,
     )
 
 

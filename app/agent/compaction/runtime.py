@@ -29,6 +29,7 @@ from app.agent.compaction.policy import (
 )
 from app.agent.messages import text_of
 from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.retry import ainvoke_with_retry
 from app.config import (
     COMPACT_AT,
     COMPACT_ENABLED,
@@ -60,7 +61,12 @@ def compaction_floor(state: dict) -> int:
 
 
 async def compact_once(
-    state: dict, *, summary_model: BaseChatModel, thread_id: str, force: bool = False
+    state: dict,
+    *,
+    summary_model: BaseChatModel,
+    thread_id: str,
+    force: bool = False,
+    config: dict | None = None,
 ) -> dict:
     """
     跑一次压缩判定与摘要，返回状态更新；没压就返回空字典。
@@ -97,9 +103,13 @@ async def compact_once(
     )
     started = monotonic()
     try:
-        response = await summary_model.ainvoke(
+        response = await ainvoke_with_retry(
+            summary_model,
             summary_request(previous, body),
-            config={"tags": [TAG]},
+            config=config,
+            thread_id=thread_id,
+            label="摘要调用",
+            tags=[TAG],
         )
     except Exception as exc:
         # 压不动不是会话的错：本轮照旧发全量，退避之后再试

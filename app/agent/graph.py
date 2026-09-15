@@ -19,6 +19,7 @@ from app.agent.compaction.runtime import COMPACT_NODE, compact_once
 from app.agent.messages import usable_compaction
 from app.agent.models import build_model, build_summary_model
 from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.retry import ainvoke_with_retry
 from app.agent.tool_calls import run_tools
 from app.agent.tools import TOOLS
 
@@ -91,9 +92,13 @@ def build_graph(
 
     async def compact_context(state: AgentState) -> dict:
         """超水位就把中段摘要掉；不超（或压不动）就原样放行，返回空更新。"""
-        thread_id = (get_config().get("configurable") or {}).get("thread_id") or "-"
+        config = get_config()
+        thread_id = (config.get("configurable") or {}).get("thread_id") or "-"
         return await compact_once(
-            state, summary_model=summary_model, thread_id=thread_id
+            state,
+            summary_model=summary_model,
+            thread_id=thread_id,
+            config=config,
         )
 
     async def call_model(state: AgentState):
@@ -117,8 +122,12 @@ def build_graph(
                 len(messages),
             )
 
-        response = await model_with_tools.ainvoke(
-            [{"role": "system", "content": prompt}, *messages]
+        response = await ainvoke_with_retry(
+            model_with_tools,
+            [{"role": "system", "content": prompt}, *messages],
+            config=get_config(),
+            thread_id=(get_config().get("configurable") or {}).get("thread_id") or "-",
+            label="模型调用",
         )
         meta = getattr(response, "usage_metadata", None) or {}
         if not meta:
