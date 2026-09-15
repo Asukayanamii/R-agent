@@ -1,8 +1,7 @@
 """
 上下文压缩的纯逻辑：估算、切点、序列化、提示词、失败冷却。
 
-这里不碰图、不碰模型、不碰检查点——`langgraph_runner` 里的 compact 节点负责调用顺序，
-本模块只提供能单独测的零件。
+这里不碰图、不碰模型、不碰检查点——`runtime` 负责调用顺序，本模块只提供能单独测的零件。
 
 设计对齐开源 coding agent（Pi / Hermes）的共识：
 
@@ -20,6 +19,8 @@ from time import monotonic
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from app.agent.messages import text_of
+
 CJK_RE = re.compile(r"[\u3000-\u9fff\uff00-\uffef]")
 
 CJK_PER_TOKEN = 0.6
@@ -35,21 +36,7 @@ MIN_MIDDLE = 2
 """少于两条消息的中段不值得为它调一次模型。"""
 
 TAG = "compact"
-"""摘要调用的标签：`_run` 靠它把这次调用的文本流挡在前端之外。"""
-
-
-def text_of(message: object) -> str:
-    """兼容 content 为字符串与分段列表两种形态（与 runner 共用同一份实现）。"""
-    content = getattr(message, "content", message)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            part.get("text", "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        )
-    return ""
+"""摘要调用的标签：事件翻译层靠它把这次调用的文本流挡在前端之外。"""
 
 
 def rough_tokens(text: str) -> int:

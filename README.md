@@ -316,6 +316,21 @@ app/agent/        Agent 运行时 图定义、事件映射、沙箱、工具
 app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换用
 ```
 
+`app/agent/` 内部按**关注点**分文件——一个模块名说清一件事，别再往 `langgraph_runner.py` 里塞：
+
+| 文件 | 放什么 |
+| --- | --- |
+| `graph.py` | 图与节点（`AgentState`、`build_graph`、superstep 上限） |
+| `stream.py` | LangGraph 事件 → 项目事件协议（`translate_events`） |
+| `langgraph_runner.py` | 门面：实现 `AgentRunner` 协议的 `LangGraphRunner`，不写业务逻辑 |
+| `tool_calls.py` | 工具执行：人工审批、并行调用、失败与中断收口 |
+| `compaction/` | 上下文压缩（`policy` 纯逻辑 / `runtime` 接进图） |
+| `messages.py` | 消息与历史重建（纯函数，能单独测） |
+| `models.py` | 模型构建（正常 / 摘要 / 没配 key 时的占位） |
+| `prompts.py` | 系统提示词（人格 + 工具选择策略） |
+| `runner.py` | `AgentRunner` 协议与 `StubRunner` |
+| `sandbox.py` / `runtime.py` / `tools/` | 沙箱、工作区 ContextVar、工具本体 |
+
 - `app/container.py` 是**组装根**：选哪个实现、连接何时开关，都属于应用装配
 - `app/handler/` 是**全局异常处理**：非流式那半边的兜底出口（流式在 `app/event/stream.py`）
 - `app/event/` 是**协议模型**（wire format）：前端能看见的一切形状。判据只有一条——
