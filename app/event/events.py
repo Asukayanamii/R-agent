@@ -45,11 +45,50 @@ class ToolStartData(BaseModel):
     args: dict = Field(default_factory=dict, description="调用参数")
 
 
+class ToolDiffLine(BaseModel):
+    """
+    差异里的一行。
+
+    行号的键名是 `old` / `new`：界面按"旧文件列 / 新文件列"渲染两列行号，名字对上才不容易接错。
+    """
+
+    kind: Literal["ctx", "del", "add", "skip"] = Field(
+        ..., description="ctx 上下文 / del 删除 / add 新增 / skip 被折叠的未变化段"
+    )
+    text: str = Field("", description="行内容（含缩进），skip 行没有内容")
+    old: int | None = Field(None, description="旧文件里的行号；新增行为 None")
+    new: int | None = Field(None, description="新文件里的行号；删除行为 None")
+    count: int = Field(0, description="仅 skip 行：这里折叠了几行未变化内容")
+
+
+class ToolDiff(BaseModel):
+    """
+    一次文件改动的结构化差异，供界面按行渲染。
+
+    **模型看不到它**：它走 `ToolMessage` 的 artifact，不进提示词——模型刚做完这次替换，
+    让它在上下文里再读一遍改动没有收益，反而会长期占着历史。历史恢复时同样从这个 artifact
+    取（检查点里存了），所以重开旧会话仍看得到当时的差异。
+    """
+
+    additions: int = Field(0, description="新增行数")
+    deletions: int = Field(0, description="删除行数")
+    lines: list[ToolDiffLine] = Field(
+        default_factory=list, description="按文件顺序排列的差异行"
+    )
+    truncated: bool = Field(
+        False, description="差异过大被截断；或文件太大，干脆没生成差异"
+    )
+    omitted: int = Field(0, description="被截掉、没能显示的差异行数")
+
+
 class ToolEndData(BaseModel):
     id: str = Field(..., description="与 tool_start 相同的调用 ID")
     ok: bool = Field(True, description="工具是否执行成功")
     result: str | None = Field(None, description="工具返回值，失败时为 None")
     error: str | None = Field(None, description="失败原因，成功时为 None")
+    diff: ToolDiff | None = Field(
+        None, description="文件改动差异；目前只有 edit 会带，其他工具为 None"
+    )
 
 
 class InterruptData(BaseModel):
@@ -113,6 +152,9 @@ class HistoryToolCall(BaseModel):
     )
     result: str | None = Field(None, description="成功时的返回值")
     error: str | None = Field(None, description="失败或未完成的原因")
+    diff: ToolDiff | None = Field(
+        None, description="文件改动差异；目前只有 edit 会带，其他工具为 None"
+    )
 
 
 class HistoryMessage(BaseModel):

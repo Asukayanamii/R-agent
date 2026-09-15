@@ -19,7 +19,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.graph import MessagesState
 from langgraph.types import interrupt
 
-from app.agent.messages import error_message
+from app.agent.messages import error_message, text_of
 from app.agent.runtime import current_workspace
 from app.agent.tools import APPROVAL_REQUIRED, TOOLS
 
@@ -96,7 +96,15 @@ async def invoke_call(
         return error_message(call["id"], f"未知工具：{call['name']}")
 
     try:
-        output = await tool.ainvoke(call["args"], config=config)
+        output = await tool.ainvoke(
+            {
+                "name": call["name"],
+                "args": call["args"],
+                "id": call["id"],
+                "type": "tool_call",
+            },
+            config=config,
+        )
     except GraphBubbleUp:
         # 这句不能删，也不能挪到 except Exception 后面：GraphBubbleUp 继承 Exception，
         # interrupt() 抛的就是它。被当成工具失败的话，工具内部的沙箱授权询问会静默
@@ -113,7 +121,13 @@ async def invoke_call(
         # 其余异常（参数校验失败、工具内部 bug）：同样是失败，标出是异常
         logger.warning("工具异常 name=%s：%s", call["name"], exc)
         return error_message(call["id"], f"工具执行失败：{exc}")
-    return ToolMessage(content=str(output), tool_call_id=call["id"])
+    # 按完整 tool_call 调用（带上 name / id / type）时，LangChain 会把正文、artifact、
+    # tool_call_id 一起包进 ToolMessage——artifact 是工具留给界面的结构化数据
+    # （`content_and_artifact`，目前只有 edit 的结构化差异用它），正文进提示词、artifact 不进。
+    # 注意：只传参数 dict 调用的形态**会把 artifact 悄悄丢掉**（实测），所以这里必须给整条调用。
+    if isinstance(output, ToolMessage):
+        return output
+    return ToolMessage(content=text_of(output), tool_call_id=call["id"])
 
 
 async def run_calls(
