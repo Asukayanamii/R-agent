@@ -1,0 +1,27 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+%% 这张图由代码生成，别手改。改了节点/边（app/agent/graph.py 的 build_graph）就重新生成：
+%%   graph = build_graph(InMemorySaver())
+%%   graph.get_graph().draw_mermaid()          → 本文件
+%% 渲染 graph.png **不要**用 langchain 的 draw_mermaid_png：它用标准 base64 拼 URL，
+%% payload 里一旦出现 '/' 就 404（实测）。走 urlsafe：
+%%   b64 = base64.urlsafe_b64encode(Path("docs/graph.mmd").read_bytes()).decode()
+%%   requests.get(f"https://mermaid.ink/img/{b64}?type=png&bgColor=!white").content
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	agent(agent)
+	tools(tools)
+	compact(compact)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> compact;
+	agent -.-> __end__;
+	agent -.-> tools;
+	compact --> agent;
+	tools --> compact;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+
