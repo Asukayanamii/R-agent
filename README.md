@@ -171,6 +171,26 @@ python -m uvicorn app.main:app --reload --port 8000
 - **检查点会继续变大**：我们保原文不删，是"宁大不丢"的自觉取舍。真要瘦身是归档层的事，
   不在当前范围。
 
+## 上游失败重试
+
+模型接口偶发 429、5xx、连接被掐的时候，不该把一次失败原样甩给用户。做法照 Pi
+（earendil-works/pi）：**错误先分类，再谈退避**。
+
+- **值不值得重试看错误本身**：限流（429 / rate limit / too many requests）、服务端
+  5xx（overloaded、service unavailable、internal error）、网关中转的瞬时故障
+  （`Provider returned error`）、网络与传输中断（connection reset、socket hang up、
+  timeout）、流提前结束，才算瞬态。**配额与计费类失败不重试**——`insufficient_quota`、
+  `quota exceeded`、`billing`、usage limit 这些不是"暂时忙"，重试只会白等，有些网关还会
+  一路等到额度恢复；鉴权、参数错误同理（401/400 立刻失败）。
+- **退避**：2s、4s、8s（`2s × 2^(n-1)`），最多 3 次，单次等待上限 60 秒。provider 明确
+  回了 `Retry-After` 就听它的，但**超过上限直接失败并说明原因**，不静默等几分钟。
+- **已经吐出字的调用不重试**：前端没法把已经渲染的半截回答撤回去，重试只会把它再拉一遍，
+  看起来像答了两遍。宁可原样报错（要支持得先有"重置本轮文本"的事件）。
+- **SDK 自带的重试关掉了**（`max_retries=0`）：它不记日志、延迟不可控，次数还会和我们这层
+  相乘（3 × 2 次）。重试只有一处，全在 `app/agent/retry.py`。
+- 重试耗尽后抛出去的是**最后一次的异常原文**，两个异常出口不变；每次重试都会先写一行
+  WARNING（第几次、等多久、原文），所以日志里能看出"这次慢是因为在重试"。
+
 ## 工作区
 
 **信任边界是工作区，不是会话。** 同一个工作区的所有对话共享同一份沙箱授权。
@@ -327,6 +347,7 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 | `compaction/` | 上下文压缩（`policy` 纯逻辑 / `runtime` 接进图） |
 | `messages.py` | 消息与历史重建（纯函数，能单独测） |
 | `models.py` | 模型构建（正常 / 摘要 / 没配 key 时的占位） |
+| `retry.py` | 上游调用失败的重试（错误分类 + 退避） |
 | `prompts.py` | 系统提示词（人格 + 工具选择策略） |
 | `runner.py` | `AgentRunner` 协议与 `StubRunner` |
 | `sandbox.py` / `runtime.py` / `tools/` | 沙箱、工作区 ContextVar、工具本体 |
@@ -356,7 +377,7 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 | 级别 | 记什么 | 例子 |
 | --- | --- | --- |
 | `ERROR` | 需要人去处理的失败 | 未处理的异常、对话流异常（都带堆栈） |
-| `WARNING` | 降级与拒绝 | 没配 key、沙箱硬阻断、工具被拒绝、目录不存在、摘要失败或没有净收益（本轮不压缩） |
+| `WARNING` | 降级与拒绝 | 没配 key、沙箱硬阻断、工具被拒绝、目录不存在、摘要失败或没有净收益（本轮不压缩）、**上游调用失败正在重试** |
 | `INFO` | 主线里程碑 | 每轮对话起止、工具调用与用时、等待确认、**上下文压缩（前后 tokens）**、绑定工作区、删除会话、启动迁移与压缩配置 |
 | `DEBUG` | 细节 | 每次写库、路径检查放行、历史与扫描条数、前端关键转场 |
 
