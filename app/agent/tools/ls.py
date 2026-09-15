@@ -16,6 +16,7 @@ async def ls(path: str = ".") -> str:
 
     - path 省略时列出工作区根目录
     - 条目过多时截断
+    - **看目录就用这个**，别用 bash 的 ls：这里目录排在前面、带大小与修改时间
     """
     try:
         target = guard_path(path, READ)

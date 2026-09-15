@@ -16,6 +16,7 @@ async def write(path: str, content: str) -> str:
     - content 是**完整**内容，不是片段；只改一小段请用 edit，
       用 write 改片段会把其余内容整个丢掉
     - 覆盖已有文件会丢弃原有内容
+    - **新建或整体覆盖就用这个**，别用 bash 的 echo >、tee、cp
     """
     try:
         target = guard_path(path, WRITE)

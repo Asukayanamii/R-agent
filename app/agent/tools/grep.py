@@ -26,6 +26,8 @@ async def grep(
     - glob 可按文件名过滤，例如 "*.py"
     - ignore_case 忽略大小写；命中行数超过 max_results 时截断
     - 跳过 .git、__pycache__、node_modules 等目录与二进制文件
+    - **按内容搜就用这个**，别用 bash 的 grep/rg：这里结果带文件与行号、自动跳过噪音目录、
+      超限会告诉你截断了，也不会把几段搜索的输出混成一片
     """
     flags = re.IGNORECASE if ignore_case else 0
     try:

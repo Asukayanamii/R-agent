@@ -390,6 +390,9 @@
     padding-top: 6px;
   }
   .compact summary { cursor: pointer; }
+  /* 刚压缩完时短暂高亮一下：重放历史会停在底部，光滚过去容易看漏 */
+  .compact.flash { border-top-color: var(--warn); }
+  .compact.flash > div:first-child { color: var(--warn); font-weight: 600; }
   .compact .csum {
     margin-top: 6px;
     padding: 8px 10px;
@@ -1965,6 +1968,15 @@ compactBtn.onclick = async () => {
       return;
     }
     await openThread(threadId);
+    // 分隔线在历史中间（常在第四五条那儿），而重放历史会停在底部——把它滚进视野并高亮，
+    // 否则点了压缩的人根本看不到发生了什么
+    const notes = list.querySelectorAll(".compact");
+    const note = notes[notes.length - 1];
+    if (note) {
+      note.scrollIntoView({ block: "center", behavior: "smooth" });
+      note.classList.add("flash");
+      setTimeout(() => note.classList.remove("flash"), 1600);
+    }
   } catch (err) {
     showError(`压缩失败：${err.message || err}`);
   } finally {

@@ -22,6 +22,8 @@ async def read(path: str, offset: int = 1, limit: int = MAX_LINES) -> str:
     - 内容过长时只保留开头，并在末尾提示下次该用哪个 offset
     - 二进制文件会被拒绝，那种情况请改用 bash
     - 返回的行号前缀仅供定位，不要写进 edit 的匹配文本里
+    - **要读文件就用这个**，别用 bash 的 cat / head / tail / sed -n：这里带行号、
+      支持分页续读，超长时还会告诉你下次从哪一行接着读
     """
     try:
         target = guard_path(path, READ)
