@@ -59,6 +59,10 @@ class ResumeRequest(BaseModel):
     value: str = Field(..., min_length=1, description="用户对 interrupt 的选择")
 
 
+class AbandonRequest(BaseModel):
+    thread_id: str = Field(..., description="会话 ID")
+
+
 class WorkspaceRequest(BaseModel):
     thread_id: str = Field(..., description="会话 ID")
     path: str = Field(
@@ -121,6 +125,24 @@ async def chat_resume(payload: ResumeRequest) -> StreamingResponse:
         payload.thread_id,
         get_service().resume(thread_id=payload.thread_id, value=payload.value),
     )
+
+
+ABANDON_DOC = """
+放弃当前的待确认，让这个会话重新能发消息。
+
+用在"确认卡点过一次、但那次继续失败（网关 400 / 断网）"之后：服务端 interrupt 还挂着，
+前端会把之后每条消息都判成"待确认未处理"而只排队（`threadPending`）——看起来整条会话死了，
+而报错提示里那句"请放弃这次待确认"原本没有对应的动作。
+
+放弃 = 替用户回答"这轮作罢"：补一条带 error 的回执，会话随即可以继续。返回消化掉的调用数
+（0 = 本来就没有待确认）。
+"""
+
+
+@router.post("/abandon", summary="放弃当前的待确认", description=ABANDON_DOC)
+async def chat_abandon(payload: AbandonRequest) -> Result[dict]:
+    count = await get_service().abandon(payload.thread_id)
+    return Result.success(data={'abandoned': count}, message=f'已放弃 {count} 个待确认')
 
 
 @router.post(

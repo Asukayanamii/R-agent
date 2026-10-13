@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from app.agent.compaction.policy import CompactionSettings
 from app.agent.compaction.runtime import COMPACT_NODE, compact_once
 from app.agent.messages import (
+    ABANDON_MESSAGE,
     INTERRUPTED_MESSAGE,
     build_history,
     title_of,
@@ -260,6 +261,43 @@ class LangGraphRunner:
                 as_node="tools",
             )
         logger.info("补齐被中断的调用 thread=%s 条数=%d", thread_id, len(calls))
+        return len(calls)
+
+    async def abandon(self, thread_id: str, workspace: str | None = None) -> int:
+        """放弃当前的待确认：把 interrupt 消化掉，让会话能继续发新消息。
+
+        用在"卡片点过一次、但那次 resume 失败（网关 400 / 断网）"的场景：服务端 interrupt
+        还挂着，前端就会把之后每条消息都判成"待确认未处理"而只排队（`threadPending`），
+        看起来整条会话死了——报错里那句"请放弃这次待确认"原本没有对应的动作。
+
+        实现与 `repair_after_abort` 同一招：`aupdate_state(as_node="tools")` 补一条带 error 的回执，
+        等于替用户回答"这轮作罢"。区别是它**允许动停在 interrupt 上的会话**——那正是它的用途。
+        返回消化掉的调用数（0 = 本来就没有待确认）。
+        """
+        config = self._config(thread_id, workspace)
+        async with self.runtime.lease(thread_id, scope=workspace or '') as version:
+            snapshot = await version.graph.aget_state(config)
+            if not snapshot.interrupts:
+                return 0
+            calls = unanswered_calls(snapshot.values.get("messages", []))
+            if not calls:
+                logger.warning("有待确认但没有可回执的调用，放弃失败 thread=%s", thread_id)
+                return 0
+            await version.graph.aupdate_state(
+                config,
+                {
+                    "messages": [
+                        ToolMessage(
+                            content=ABANDON_MESSAGE,
+                            tool_call_id=call["id"],
+                            status="error",
+                        )
+                        for call in calls
+                    ]
+                },
+                as_node="tools",
+            )
+        logger.info("已放弃待确认 thread=%s 条数=%d", thread_id, len(calls))
         return len(calls)
 
     async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:

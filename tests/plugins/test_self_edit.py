@@ -240,6 +240,36 @@ async def test_name_with_suffix_is_not_doubled(tmp_path):
     assert not (workspace / '.my_agent' / 'plugins' / 'probe.py.py').exists()
 
 
+async def test_abandon_clears_a_pending_interrupt(tmp_path):
+    """放弃待确认：点了卡片但那次 resume 失败（网关 400）之后，会话会卡在"待确认"——
+    之后每条消息都只排队；`abandon` 是那条出路，消化掉 interrupt 后会话重新可用。"""
+    from app.plugins.builtin import protocol as protocol_plugin
+
+    script = [
+        call('add_fragment', {'name': 'probe_notes', 'declaration': DECLARATION}),
+        AIMessage(content='加好了', usage_metadata=USAGE),
+    ]
+    runtime, libraries, workspace = await make_wired(tmp_path, script)
+    await runtime.ctx.plugin(protocol_plugin.plugin, essential=True)
+
+    from app.agent.langgraph_runner import LangGraphRunner
+
+    runner = LangGraphRunner(runtime, runtime.ctx.get('protocol'))
+    frames = [
+        item async for item in runner.stream('t1', '加一条链', workspace=str(workspace))
+    ]
+    assert any(item.type == 'interrupt' for item in frames)
+    assert await runner.is_interrupted('t1')
+
+    count = await runner.abandon('t1', str(workspace))
+
+    assert count == 1
+    assert not await runner.is_interrupted('t1')
+    # 之后能继续发新消息（不再被"待确认"挡住）
+    frames = [item async for item in runner.stream('t1', '继续', workspace=str(workspace))]
+    assert not any(item.type == 'error' for item in frames), [item.model_dump() for item in frames]
+
+
 async def test_inspect_graph_reads_the_current_picture(tmp_path):
     """`inspect_graph` 给模型一份只读的现状：报告 + 片段清单 + 最近审计。"""
     script = [

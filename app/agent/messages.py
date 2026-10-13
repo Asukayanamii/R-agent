@@ -28,6 +28,7 @@ from app.harness.events import (
 logger = logging.getLogger(__name__)
 
 INTERRUPTED_MESSAGE = "这一轮被中断，未取得结果。"
+ABANDON_MESSAGE = "用户放弃了这次待确认，这一轮作罢。"
 
 
 def text_of(message: object) -> str:

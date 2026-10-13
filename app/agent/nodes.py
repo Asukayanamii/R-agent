@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_config
 
 from app.agent.compaction.policy import with_summary
@@ -34,6 +35,34 @@ LangGraph 逼着必须给一个有限值（默认只有 25），但这个值不�
 所以取 10000（约 3300 个工具回合），当成"真出现死循环时最后兜底"，而不是日常约束。
 **真正的停止手段是用户点停止**（与手动停止走同一条收尾路径）。
 """
+
+
+def _looks_like_rejection(error: Exception) -> bool:
+    """是不是"网关拒绝了这个请求"那类错（而不是超时、限流、连接断）。"""
+    text = f"{type(error).__name__}: {error}".lower()
+    return "invalid_request" in text or "badrequest" in text or " 400" in text
+
+
+def _request_shape(messages: list, registry: Any, model: Any) -> str:
+    """请求形状摘要：**未配对的工具调用**是已知会让 provider 直接 400 的一种（见 messages.py）。"""
+    calls = [
+        item["id"]
+        for message in messages
+        if isinstance(message, AIMessage)
+        for item in (message.tool_calls or [])
+    ]
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    dangling = [call_id for call_id in calls if call_id not in answered]
+    roles: dict[str, int] = {}
+    for message in messages:
+        name = type(message).__name__
+        roles[name] = roles.get(name, 0) + 1
+    chars = sum(len(str(getattr(message, "content", "") or "")) for message in messages)
+    return (
+        f"模型={getattr(model, 'model_name', None) or type(model).__name__} 条数={len(messages)} "
+        f"角色={roles} 工具调用={len(calls)} 未配对={len(dangling)} 正文≈{chars} 字符 "
+        f"工具={len(registry.names())}"
+    )
 
 
 def log_step_limit(thread_id: str, exc: Exception) -> None:
@@ -118,10 +147,17 @@ def make_model_node(
             "label": "模型调用",
         }
         prompt_messages = [{"role": "system", "content": prompt}, *messages]
-        if retry is not None:
-            response = await retry.ainvoke(model_with_tools, prompt_messages, **call)
-        else:
-            response = await model_with_tools.ainvoke(prompt_messages, config=config)
+        try:
+            if retry is not None:
+                response = await retry.ainvoke(model_with_tools, prompt_messages, **call)
+            else:
+                response = await model_with_tools.ainvoke(prompt_messages, config=config)
+        except Exception as error:
+            if _looks_like_rejection(error):
+                # 网关的 400 是笼统拒绝（"invalid request error"），只有形状能说明问题：
+                # 未配对的工具调用、请求多大、带的工具多少。这一行是下次排查的唯一线索。
+                logger.warning("模型拒绝了这次请求：%s\n  形状：%s", error, _request_shape(prompt_messages, registry, model))
+            raise
         meta = getattr(response, "usage_metadata", None) or {}
         if not meta:
             return {"messages": [response]}

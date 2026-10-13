@@ -307,6 +307,19 @@ class ChatService:
         """主动压缩上下文。返回 None 表示没得压（会话还短、中段不足两条）。"""
         return await self._runner.compact(thread_id)
 
+    async def abandon(self, thread_id: str) -> int:
+        """放弃当前的待确认，让卡住的会话重新可发消息（见 `LangGraphRunner.abandon`）。
+
+        收尾必须**重算索引里的 pending 标记**（`_record` 按 `_stuck_reason` 重写那一行）：
+        前端判断"还要不要排队"读的就是它——只清图状态不刷索引，界面照样把新消息判成待确认、
+        只往待发送里塞（真跑里就是这么漏的）。
+        """
+        workspace = await self._scope_workspace(thread_id)
+        count = await self._runner.abandon(thread_id, workspace)
+        await self._record(thread_id, title="")   # title 空串不会覆盖已有标题（见 DAO）
+        logger.info("放弃待确认 thread=%s 条数=%d", thread_id, count)
+        return count
+
     async def history(self, thread_id: str) -> HistoryView:
         return await self._runner.history(thread_id)
 
