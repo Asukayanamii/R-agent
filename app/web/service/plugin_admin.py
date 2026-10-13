@@ -49,11 +49,21 @@ class PluginAdmin:
 
     # ---------------------------------------------------------------- 读
 
-    def overview(self, workspace: str = '') -> dict[str, Any]:
-        """清单 + 两级库目录：界面一次请求拿全（含每行的状态与原因）。"""
+    async def overview(self, workspace: str = '') -> dict[str, Any]:
+        """清单 + 两级库目录：界面一次请求拿全（含每行的状态与原因）。
+
+        **先 ensure 那个工作区库**：库是按会话工作区"按需登记"的，没登记就看不到它的文件——
+        面板上会假装"这里什么都没有"（真跑里点开面板只见内置行的原因）。打开面板本身就是
+        "我要看这个工作区的库"，登记它是这一层的责任。
+        """
         if not self.available:
             return {'enabled': False, 'libraries': {}, 'plugins': []}
         target = workspace.strip() or None
+        if target:
+            try:
+                await self._libraries.ensure(target)
+            except Exception as error:  # noqa: BLE001 - 登记失败不该让清单整个打不开
+                logger.warning('工作区插件库登记失败 %s：%s', target, error)
         return {
             'enabled': True,
             'libraries': self._libraries.library_dirs(target),
@@ -77,7 +87,8 @@ class PluginAdmin:
         # （"文件都删了还显示待批准"就是这么来的）
         if where == WHERE_WORKSPACE and scope:
             if enabled:
-                await self._libraries.trust(scope, _stripped(path.name))
+                # 新写入信任也是"改动了"——不然批准一个待批准的文件会回"本来就是这个状态"（说谎）
+                changed = await self._libraries.trust(scope, _stripped(path.name)) or changed
             else:
                 await self._libraries.rescan(scope)
         else:
@@ -85,7 +96,7 @@ class PluginAdmin:
 
         action = '启用' if enabled else '停用'
         note = '' if changed else '（本来就是这个状态，没改动）'
-        return self._result(workspace, f'{action} {filename}：完成{note}')
+        return self._result(await self.overview(workspace), f'{action} {filename}：完成{note}')
 
     async def reload(self, where: str, workspace: str, filename: str) -> dict[str, Any]:
         """强制重读：改了不生效、或上次装载失败想再试一次时用。"""
@@ -93,7 +104,7 @@ class PluginAdmin:
         scope = workspace.strip() if where == WHERE_WORKSPACE else None
         report = await self._libraries.reload(scope, path.name)
         detail = report.render()
-        return self._result(workspace, f'已重读 {filename}：{detail}')
+        return self._result(await self.overview(workspace), f'已重读 {filename}：{detail}')
 
     async def remove(self, where: str, workspace: str, filename: str) -> dict[str, Any]:
         """删掉库里的文件（危险动作，界面负责二次确认）。
@@ -113,15 +124,15 @@ class PluginAdmin:
         else:
             await self._libraries.rescan_global()
         return self._result(
-            workspace,
+            await self.overview(workspace),
             f'已删除 {filename}。想回来就再放一个同名文件（工作区库还要重新批准一次）。',
         )
 
     # ---------------------------------------------------------------- 内部
 
-    def _result(self, workspace: str, message: str) -> dict[str, Any]:
-        """动作的返回值 = 新清单 + 一句人话（界面不用自己推断结果）。"""
-        payload = self.overview(workspace)
+    def _result(self, overview: dict[str, Any], message: str) -> dict[str, Any]:
+        """动作的返回值 = 新清单（调用方已经准备好了）+ 一句人话。"""
+        payload = dict(overview)
         payload['message'] = message
         return payload
 

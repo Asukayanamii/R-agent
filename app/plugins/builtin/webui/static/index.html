@@ -711,6 +711,97 @@
   .ws-foot button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
   .ws-foot button:disabled { opacity: .4; cursor: not-allowed; }
 
+  /* ============ 插件面板 ============
+     与工作区面板同一套壳（fixed 顶栏下方、点关闭收起），行里左边是信息、右边是动作。
+     动作按钮由**状态**决定（待批准 → 启用即批准，已停用 → 启用，其余 → 停用），
+     所以这里不做多选，一行一组按钮。 */
+  #pluginPanel {
+    position: fixed;
+    top: 58px; left: 50%; transform: translateX(-50%);
+    width: min(780px, calc(100vw - 40px));
+    max-height: 70vh;
+    display: none; flex-direction: column;
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 14px 44px rgba(0, 0, 0, .3);
+    z-index: 50;
+  }
+  #pluginPanel.open { display: flex; }
+  .pl-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .pl-head .title { font-size: 13.5px; font-weight: 600; flex-shrink: 0; }
+  .pl-head .count { font-size: 12px; color: var(--text-faint); flex-shrink: 0; }
+  .pl-head .path {
+    flex: 1;
+    font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    text-align: right;
+  }
+  /* 两级库的落点：改完文件不用去翻文档就能知道该放哪 */
+  .pl-libs {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-faint);
+  }
+  .pl-libs div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 动作结果：成功是一句人话，失败是错误原文，都留在这里不被下一行覆盖 */
+  .pl-msg {
+    display: none;
+    padding: 9px 14px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border-soft);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 30vh;
+    overflow: auto;
+  }
+  .pl-msg.show { display: block; }
+  .pl-msg.err { color: var(--danger); background: var(--danger-bg); }
+  .pl-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .pl-list .pl-empty { padding: 18px; text-align: center; color: var(--text-faint); font-size: 13px; }
+  .pl-row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  .pl-row:hover { background: var(--bg-hover); }
+  .pl-row .pname {
+    flex: 0 1 auto; min-width: 0;
+    font-family: var(--mono); font-size: 12.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pl-row .psrc {
+    flex-shrink: 0;
+    font-size: 11px; color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 0 6px;
+  }
+  .pl-row .pstate { flex-shrink: 0; font-size: 11.5px; font-weight: 600; }
+  .pl-row .pwhy {
+    flex: 1; min-width: 0;
+    font-size: 11.5px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pl-row .pacts { flex-shrink: 0; display: flex; gap: 6px; }
+  .pl-row .pacts button {
+    font-family: inherit; font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--bg-raise); color: var(--text);
+    cursor: pointer;
+    transition: background .12s;
+  }
+  .pl-row .pacts button:hover { background: var(--bg-hover); }
+  .pl-row .pacts button.danger { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
+  .pl-row .pacts button:disabled { opacity: .4; cursor: not-allowed; }
+
   /* ============ 确认弹窗（照 Open WebUI 的 ConfirmDialog，不用原生 confirm） ============ */
   .mask {
     position: fixed; inset: 0;
@@ -802,6 +893,7 @@
       <span class="icon">⌂</span><span class="label" id="wsLabel">工作区</span>
     </button>
     <span class="spacer"></span>
+    <button class="icon-btn" id="pluginBtn">插件</button>
     <button class="icon-btn" id="logBtn">事件</button>
   </div>
 
@@ -830,6 +922,19 @@
     <span class="msg" id="wsMsg"></span>
     <button id="wsPick" class="primary">选用此目录</button>
   </div>
+</div>
+
+<div id="pluginPanel">
+  <div class="pl-head">
+    <span class="title">插件</span>
+    <span class="count" id="plCount"></span>
+    <span class="path" id="plWs"></span>
+    <button class="icon-btn" id="plRefresh">刷新</button>
+    <button class="icon-btn" id="plClose">关闭</button>
+  </div>
+  <div class="pl-libs" id="plLibs"></div>
+  <div class="pl-msg" id="plMsg"></div>
+  <div class="pl-list" id="plList"></div>
 </div>
 
 <aside id="drawer">
@@ -2192,6 +2297,228 @@ async function pickWorkspace() {
     wsPick.disabled = !wsBrowsing;
   }
 }
+
+/* ============================================================
+   插件面板
+
+   后端把三个动作的返回值都做成"新清单 + 一句人话"（见 web/api/plugins.py），
+   所以这里**不推断状态**：拿到返回就把面板重画一遍，界面上不会有第二种真相。
+
+   两条外来约定：
+   1. 状态是中文或大写英文混着的（`ACTIVE` / `PENDING` / `FAILED` 来自内核 fiber，
+      `待批准` / `已停用` 来自插件库的报告），都按"未知状态就用中性色"兜底。
+   2. `source` 用中文（内置 / 全局 / 工作区），`where` 用英文（global / workspace）——
+      接口的分工如此，转换只在这里做一次。
+
+   内置插件只列不动：它们是装配的一部分（缺了启动就失败），要改组合得改装配清单。
+   ============================================================ */
+const plPanel = document.getElementById("pluginPanel");
+const plList = document.getElementById("plList");
+const plLibs = document.getElementById("plLibs");
+const plMsg = document.getElementById("plMsg");
+const plCount = document.getElementById("plCount");
+const plWs = document.getElementById("plWs");
+const pluginBtn = document.getElementById("pluginBtn");
+
+const PL_STATE = {
+  ACTIVE: { text: "已启用", color: "var(--ok)" },
+  PENDING: { text: "缺服务", color: "var(--warn)" },
+  FAILED: { text: "装载失败", color: "var(--danger)" },
+  "待批准": { text: "待批准", color: "var(--warn)" },
+  "已停用": { text: "已停用", color: "var(--text-faint)" },
+  "已启用": { text: "已启用", color: "var(--ok)" },
+};
+const PL_WHERE = { "全局": "global", "工作区": "workspace" };
+
+/* 面板这一刻对应的清单（含它用的工作区）：动作都按这份走，避免中途换了工作区，
+   头部显示一个目录、动作却打到另一个目录上。 */
+let pluginData = null;
+let pluginWs = "";
+let pluginBusy = false;
+
+function plSay(text, isError = false) {
+  plMsg.textContent = text || "";
+  plMsg.classList.toggle("show", Boolean(text));
+  plMsg.classList.toggle("err", Boolean(text) && isError);
+}
+
+async function pluginFetch(path, init) {
+  const res = await fetch(path, init);
+  let body = null;
+  try { body = await res.json(); } catch { /* 非 JSON（网关 502 之类）下面统一报 */ }
+  // 失败走的是全局异常出口：HTTP 500 + {code, message}，message 是异常原文（"库里没有这个文件"）
+  if (!res.ok) throw new Error((body && body.message) || `HTTP ${res.status}`);
+  if (!body || !Array.isArray(body.plugins)) throw new Error("返回的清单读不出来");
+  return body;
+}
+
+function pluginAction(path, payload) {
+  pluginBusy = true;
+  renderPlugins();   // 先把按钮按下去，挡住连点
+  plSay("正在执行…");
+  pluginFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+    .then((body) => {
+      // 动作的返回就是新清单：原地刷新，不整页重载（页面上还有正在看的会话）
+      pluginData = body;
+      plSay(body.message || "完成");
+      pluginBusy = false;
+      renderPlugins();
+    })
+    .catch((err) => {
+      pluginBusy = false;
+      renderPlugins();
+      plSay(`操作失败：${err.message || err}`, true);
+    });
+}
+
+function pluginToggle(row) {
+  const where = PL_WHERE[row.source];
+  if (!where) return;
+  // 「待批准」点启用 = 批准它（第一次使用的入口），所以这两个状态共用同一个按钮
+  const enabled = row.state === "待批准" || row.state === "已停用";
+  pluginAction("/plugins/enable", {
+    where,
+    workspace: pluginWs,
+    file: row.file,
+    enabled,
+  });
+}
+
+function pluginReload(row) {
+  const where = PL_WHERE[row.source];
+  if (!where) return;
+  pluginAction("/plugins/reload", { where, workspace: pluginWs, file: row.file });
+}
+
+async function pluginRemove(row) {
+  const where = PL_WHERE[row.source];
+  if (!where) return;
+
+  const ok = await confirmDialog({
+    title: "删除插件文件",
+    bodyHtml:
+      `会从${row.source}库里删掉 <b>${escapeHtml(row.file)}</b>（${escapeHtml(row.name)}），无法恢复。` +
+      '<br><span class="sub">停用（加 <code>_</code> 前缀）能让它不再生效，文件还在——' +
+      "只想让它别跑的话用那个。删掉之后要回来，得再放一个同名文件，工作区库还要重新批准一次。</span>",
+    okText: "删除",
+  });
+  if (!ok) return;
+  pluginAction("/plugins/remove", { where, workspace: pluginWs, file: row.file });
+}
+
+function pluginRow(row) {
+  const box = el("div", "pl-row");
+  const name = el("span", "pname", row.name || row.file || "?");
+  name.title = row.file || row.name;
+  box.appendChild(name);
+  box.appendChild(el("span", "psrc", row.source || "?"));
+
+  const look = PL_STATE[row.state] || { text: row.state || "未知", color: "var(--text-dim)" };
+  const state = el("span", "pstate", look.text);
+  state.style.color = look.color;
+  state.title = row.state || "";
+  box.appendChild(state);
+
+  const why = el("span", "pwhy", row.reason || "");
+  why.title = row.reason || "";
+  box.appendChild(why);
+
+  const acts = el("div", "pacts");
+  // 内置插件没有 file，也不在管理范围：不给动作，免得点了必然失败
+  if (PL_WHERE[row.source] && row.file) {
+    const toggle = el("button", "", row.state === "已停用" || row.state === "待批准" ? "启用" : "停用");
+    toggle.title = row.state === "待批准" ? "批准并启用它" : "";
+    toggle.disabled = pluginBusy;
+    toggle.onclick = () => pluginToggle(row);
+    acts.appendChild(toggle);
+
+    const reload = el("button", "", "重读");
+    reload.title = "改了不生效，或上次装载失败时用";
+    reload.disabled = pluginBusy;
+    reload.onclick = () => pluginReload(row);
+    acts.appendChild(reload);
+
+    const del = el("button", "danger", "删除");
+    del.disabled = pluginBusy;
+    del.onclick = () => pluginRemove(row);
+    acts.appendChild(del);
+  } else {
+    acts.appendChild(el("span", "pwhy", "装配的一部分"));
+  }
+  box.appendChild(acts);
+  return box;
+}
+
+function renderPlugins() {
+  const data = pluginData;
+  plList.innerHTML = "";
+  plLibs.innerHTML = "";
+
+  if (!data) {
+    plCount.textContent = "";
+    plList.appendChild(el("div", "pl-empty", "正在读取…"));
+    return;
+  }
+  if (data.enabled === false) {
+    plCount.textContent = "";
+    plList.appendChild(
+      el("div", "pl-empty", "插件库未启用（PLUGINS_ENABLED=0）：这里只有内置插件。"),
+    );
+    return;
+  }
+
+  const rows = data.plugins || [];
+  const active = rows.filter((r) => r.state === "ACTIVE" || r.state === "已启用").length;
+  plCount.textContent = `${rows.length} 个 · 生效 ${active}`;
+  plWs.textContent = pluginWs || "（未绑定工作区：只看全局库）";
+  plWs.title = pluginWs || "";
+
+  const libs = data.libraries || {};
+  for (const [label, path] of Object.entries(libs)) {
+    const line = el("div", null, `${label}库：${path || "不可用"}`);
+    line.title = path || "";
+    plLibs.appendChild(line);
+  }
+
+  if (!rows.length) {
+    plList.appendChild(el("div", "pl-empty", "这个工作区还没有插件。"));
+    return;
+  }
+  for (const row of rows) plList.appendChild(pluginRow(row));
+}
+
+async function openPluginPanel() {
+  pluginWs = activeWorkspace();
+  pluginData = null;
+  plSay("");
+  plPanel.classList.add("open");
+  renderPlugins();
+  pluginBusy = false;
+  try {
+    pluginData = await pluginFetch(`/plugins?workspace=${encodeURIComponent(pluginWs)}`);
+    renderPlugins();
+  } catch (err) {
+    pluginData = null;
+    renderPlugins();
+    plSay(`读取插件清单失败：${err.message || err}`, true);
+  }
+}
+
+function closePluginPanel() {
+  plPanel.classList.remove("open");
+  plSay("");
+}
+
+pluginBtn.onclick = () => {
+  if (plPanel.classList.contains("open")) closePluginPanel();
+  else openPluginPanel();
+};
+document.getElementById("plClose").onclick = () => closePluginPanel();
+document.getElementById("plRefresh").onclick = () => openPluginPanel();
 
 /* ============================================================
    交互

@@ -79,7 +79,7 @@ def rows(overview: dict) -> dict[str, dict]:
 async def test_overview_lists_both_libraries_and_states(tmp_path):
     admin, workspace, global_dir = await make_admin(tmp_path)
 
-    overview = admin.overview(str(workspace))
+    overview = await admin.overview(str(workspace))
     by_file = rows(overview)
 
     assert overview['enabled'] is True
@@ -97,14 +97,14 @@ async def test_disable_and_enable_are_two_sides_of_one_thing(tmp_path):
 
     # 停用：改 `_` 前缀 + 撤信任 → 文件还在，状态是"已停用"（不是"待批准"）
     await admin.set_enabled('工作区', str(workspace), 'panel.json', False)
-    stopped = admin.overview(str(workspace))
+    stopped = await admin.overview(str(workspace))
     assert (directory / '_panel.json').is_file()
     assert not (directory / 'panel.json').exists()
     assert rows(stopped)['_panel.json']['state'] == '已停用'
 
     # 启用：去掉前缀 + 写回信任清单
     await admin.set_enabled('工作区', str(workspace), '_panel.json', True)
-    back = admin.overview(str(workspace))
+    back = await admin.overview(str(workspace))
     assert (directory / 'panel.json').is_file()
     assert rows(back)['panel.json']['state'] == 'ACTIVE'
 
@@ -113,11 +113,13 @@ async def test_enabling_a_pending_file_approves_it(tmp_path):
     """对"待批准"点启用 = 批准（第一次使用的入口），不另开一个动作。"""
     admin, workspace, _ = await make_admin(tmp_path)
 
-    assert rows(admin.overview(str(workspace)))['later.json']['state'] == '待批准'
+    assert rows(await admin.overview(str(workspace)))['later.json']['state'] == '待批准'
 
     overview = await admin.set_enabled('工作区', str(workspace), 'later.json', True)
 
     assert rows(overview)['later.json']['state'] == 'ACTIVE'
+    # 消息也要如实：批准一个待批准的文件不能回"本来就是这个状态"
+    assert '本来就是这个状态' not in overview['message']
 
 
 async def test_global_disable_renames_and_unloads(tmp_path):

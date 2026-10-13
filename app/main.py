@@ -6,8 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.web.api import chat, plugins
 from app.common.config import LOG_LEVEL
+from app.common.exceptions import InvalidInput, SandboxDenied
 from app.container import get_assets, shutdown, startup
-from app.web.handler import unhandled_exception
+from app.web.handler import invalid_input, unhandled_exception
 from app.harness.assets import ASSETS_STATE_ATTR, assets_router
 from app.web.result.result import ErrorResult, Result
 
@@ -47,6 +48,9 @@ app = FastAPI(
 )
 
 app.add_exception_handler(Exception, unhandled_exception)
+# 参数不合法是预期内的错误：400 + 一行日志，不打 traceback（见 handler.invalid_input）
+app.add_exception_handler(InvalidInput, invalid_input)
+app.add_exception_handler(SandboxDenied, invalid_input)
 
 app.add_middleware(
     CORSMiddleware,

@@ -66,7 +66,7 @@ REMOVE_DOC = """
 
 @router.get('', summary='插件清单（含状态与原因）', description=OVERVIEW_DOC)
 async def list_plugins(workspace: str = '') -> dict:
-    return get_plugin_admin().overview(workspace)
+    return await get_plugin_admin().overview(workspace)
 
 
 @router.post('/enable', summary='启用 / 停用一个插件', description=ENABLE_DOC)
