@@ -1929,7 +1929,13 @@ function threadPending() {
 async function drainOutbox() {
   if (busy || !outbox.length) return;
   if (outboxThread !== threadId) { outbox = []; outboxThread = null; renderOutbox(); return; }
-  if (threadPending()) return;   // 确认还没处理完，继续等
+  if (threadPending()) {
+    // 队列有货、会话却卡着：把出口叫到屏幕上。
+    // （收尾时那次恢复可能赶在"卡住"之前；这里兜住"卡住状态之后才出现"的情况，
+    // 否则待发送会一直干等——它等的那个"空闲"永远不会来。）
+    await restorePendingCard();
+    return;
+  }
 
   const next = outbox.shift();
   renderOutbox();
