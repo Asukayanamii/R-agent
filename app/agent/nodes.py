@@ -9,6 +9,7 @@
 """
 
 import logging
+from time import monotonic
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -19,6 +20,7 @@ from app.agent.compaction.policy import with_summary
 from app.agent.compaction.runtime import compact_once
 from app.agent.messages import usable_compaction
 from app.agent.prompts import build_system_prompt
+from app.agent.usage import cache_read_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,18 @@ LangGraph 逼着必须给一个有限值（默认只有 25），但这个值不�
 所以取 10000（约 3300 个工具回合），当成"真出现死循环时最后兜底"，而不是日常约束。
 **真正的停止手段是用户点停止**（与手动停止走同一条收尾路径）。
 """
+
+
+def _text_of(message: Any) -> str:
+    """一条消息的正文。
+
+    请求体是混着的：system 是裸 dict（`{"role": "system", "content": ...}`），其余是 LangChain
+    消息对象。形状摘要与轮次日志都得两种都算上，否则 system（AGENTS.md + 技能索引，可能很大）
+    会被静默漏掉——一个少算了 system 的"正文≈N 字符"比没有这个数更误导。
+    """
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str(getattr(message, "content", "") or "")
 
 
 def _looks_like_rejection(error: Exception) -> bool:
@@ -60,7 +74,7 @@ def _request_shape(messages: list, registry: Any, model: Any, thread_id: str = "
     for message in messages:
         name = type(message).__name__
         roles[name] = roles.get(name, 0) + 1
-    chars = sum(len(str(getattr(message, "content", "") or "")) for message in messages)
+    chars = sum(len(_text_of(message)) for message in messages)
     return (
         f"会话={thread_id} 模型={getattr(model, 'model_name', None) or type(model).__name__} "
         f"条数={len(messages)} 角色={roles} 工具调用={len(calls)} 未配对={len(dangling)} "
@@ -150,6 +164,7 @@ def make_model_node(
             "label": "模型调用",
         }
         prompt_messages = [{"role": "system", "content": prompt}, *messages]
+        started = monotonic()  # 含重试与退避：那段时间用户同样在等，算进这一轮
         try:
             if retry is not None:
                 response = await retry.ainvoke(model_with_tools, prompt_messages, **call)
@@ -166,6 +181,21 @@ def make_model_node(
                 )
             raise
         meta = getattr(response, "usage_metadata", None) or {}
+        stop = (getattr(response, "response_metadata", None) or {}).get("finish_reason") or "-"
+        # 每次模型调用一行：一轮里的模型往返占大头，这行是"这一轮到底花了多少"的唯一持续来源。
+        # 命中缓存长期贴着 0 = 端点没在复用前缀，每轮都在重预填充整个历史（见 .env.example）。
+        # 完成原因单独看 `length`：输出被上限切断，推理模型可能只吐出思考、正文与工具调用都没有。
+        logger.info(
+            "模型调用 thread=%s 用时=%.2fs 输入=%d（命中缓存 %d）输出=%d 请求=%d 条/≈%d 字符 完成=%s",
+            call["thread_id"],
+            monotonic() - started,
+            meta.get("input_tokens", 0),
+            cache_read_tokens(response),
+            meta.get("output_tokens", 0),
+            len(prompt_messages),
+            sum(len(_text_of(message)) for message in prompt_messages),
+            stop,
+        )
         if not meta:
             return {"messages": [response]}
         return {

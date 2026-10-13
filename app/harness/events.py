@@ -126,6 +126,14 @@ class CompactData(BaseModel):
 class Usage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
+    cached_tokens: int = Field(
+        0,
+        description=(
+            "输入里命中 provider 前缀缓存的部分。它决定'大窗口 + 晚压缩'这套配置花不花得来："
+            "命中时稳定前缀不必每轮重算，长期贴着 0 就说明每轮都在重预填充整个历史。"
+            "端点不报这个字段时恒为 0"
+        ),
+    )
 
 
 class MessageEndData(BaseModel):

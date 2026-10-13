@@ -26,6 +26,7 @@ from app.agent.compaction.policy import TAG as COMPACT_TAG
 from app.agent.compaction.runtime import COMPACT_NODE
 from app.agent.messages import brief, text_of, to_diff, to_interrupt_data
 from app.agent.nodes import log_step_limit
+from app.agent.usage import cache_read_tokens
 from app.harness.events import (
     CompactData,
     CompactEvent,
@@ -59,6 +60,7 @@ async def translate_events(
     """
     usage = Usage()
     message_id = ""
+    finish_reason = ""
     started = monotonic()
     tool_started: dict[str, float] = {}
 
@@ -81,6 +83,7 @@ async def translate_events(
                 usage = Usage(
                     input_tokens=usage.input_tokens + meta.get("input_tokens", 0),
                     output_tokens=usage.output_tokens + meta.get("output_tokens", 0),
+                    cached_tokens=usage.cached_tokens + cache_read_tokens(output),
                 )
                 if tagged_compact:
                     logger.debug(
@@ -90,6 +93,12 @@ async def translate_events(
                     )
                     continue
                 message_id = getattr(output, "id", "") or message_id
+                # 「这一轮为什么结束」也在这里：`length` 说明是被输出上限切断的（推理模型把预算
+                # 花在思考上时正文可能是空的、也没工具调用），那正是"答到一半就停了"的来源。
+                finish_reason = (
+                    (getattr(output, "response_metadata", None) or {}).get("finish_reason")
+                    or finish_reason
+                )
 
             elif kind == "on_chain_end" and event.get("name") == COMPACT_NODE:
                 # 节点返回的就是状态更新：这一轮真压了才有 compaction 字段（没压是空更新）。
@@ -184,13 +193,20 @@ async def translate_events(
         logger.info("等待人工确认 thread=%s：%s", thread_id, brief(data.prompt))
         yield InterruptEvent(data=data)
 
+    hit_rate = f"{usage.cached_tokens / usage.input_tokens:.0%}" if usage.input_tokens else "-"
     logger.debug(
-        "本轮跑完 thread=%s 用时=%.2fs tokens=%d/%d",
+        "本轮跑完 thread=%s 用时=%.2fs tokens=%d/%d（命中缓存 %d，占输入 %s）",
         thread_id,
         monotonic() - started,
         usage.input_tokens,
         usage.output_tokens,
+        usage.cached_tokens,
+        hit_rate,
     )
     yield MessageEndEvent(
-        data=MessageEndData(message_id=message_id or uuid4().hex[:8], usage=usage)
+        data=MessageEndData(
+            message_id=message_id or uuid4().hex[:8],
+            finish_reason=finish_reason or "stop",
+            usage=usage,
+        )
     )
