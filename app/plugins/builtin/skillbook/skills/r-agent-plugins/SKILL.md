@@ -41,6 +41,8 @@ description: 给 R-agent 写插件、启用插件或改图时读它。讲清插�
 
 - `id` 作用域内唯一；`anchor` 必须是骨架锚点之一；`chain` 非空，节点必须有 `name` 与
   `interface`（**服务名**，必须已经有插件提供它，否则装载时被挡下，报 `INTERFACE_MISSING`）。
+  先调 `inspect_graph` 看 `services`：那里列出当前所有能当 `interface` 的服务名，
+  `callable: true` 的才可以直接当节点实现（内核服务如 `tools`、`protocol` 不可调用）。
 - 通道名只能是自己的命名空间 `plugin.<片段id>.<字段>`（内核通道 `messages`/`compaction`/
   `usage_anchor`/`harness`/`plugin_failures` 只有骨架能写）；`reducer`（合并语义）写不进 JSON。
 
@@ -101,8 +103,12 @@ plugin = {
   （读写都拒、永不提示）——agent 自己写不了它，只有人（或 `add_fragment` 批准后的服务端代码）能写。
 - **生效时机**：改动（增/删/改）在**下一个回合边界**换图；批准是即时的（装载当下发生），生效仍在边界。
 - **验证**（从这四处看）：启动日志里的"合成报告"（骨架/协议/参与片段/锚点挂载/待批准/失败）、
-  `inspect_graph` 工具（报告 + 片段清单 + 审计）、审计表 `graph_version`（每次换图一行，含 `reason`）、
+  `inspect_graph` 工具（报告 + 片段清单 + **可当 `interface` 的服务清单** + 审计）、
+  审计表 `graph_version`（每次换图一行，含 `reason`）、
   `python -m app.harness`（导出当前骨架的 mermaid 图）。
+- **生效时机分两类**：结构（片段）按回合边界换图；**能力类（`ctx.tools.register`、`ctx.assets.mount`、
+  `ctx.provide`）装载即生效**——注册完工具，同一轮的下一次模型调用就能看到它（不用等边界）。
+  注意能力类是**进程级**的：工作区插件注册的工具对所有会话可见；按工作区分域的只有结构版本。
 - **回退**：删掉插件文件（回合边界回到原样），或把文件名从 `trusted` 里去掉（撤信任）。
   节点连炸三次会被**熔断**（自动摘出该片段、报告里点名），修好后改文件即重新装载。
 

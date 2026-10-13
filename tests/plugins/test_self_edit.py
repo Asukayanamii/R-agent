@@ -241,6 +241,10 @@ async def test_inspect_graph_reads_the_current_picture(tmp_path):
     assert 'builtin/loop' in payload['report']['participants']
     assert payload['spec']['fragments'][0]['id'] == 'builtin/loop'
     assert isinstance(payload['recent'], list)
+    # 服务清单：纯 `.json` 形态靠它发现"能接什么"（`callable` 标记：可调用的才能直接当节点实现）
+    services = {item['name']: item['callable'] for item in payload['services']}
+    assert 'tools' in services
+    assert services['tools'] is False  # Service 实例本身不可调用（要当节点得实现 __call__）
 
 
 async def test_resume_works_before_the_scope_exists(tmp_path):

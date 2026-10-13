@@ -295,10 +295,14 @@ class PluginDiscovery:
         report.removed.append(path.name)
 
     def _compile(self, path: Path) -> tuple[Any, Any]:
-        """读文件 → 插件对象。（`.py` 在这里被执行——所以工作区那份必须先批准。）"""
+        """读文件 → （插件对象, 默认配置）。
+
+        `.py` 在这里被执行——所以工作区那份必须先批准。带 `default_config()` 的用它给的**基础配置**
+        （与内置插件走容器时同一条约定：默认值通常引用 `.env`）；没有它就只吃 `Config` 里的 schema 默认值。
+        """
         if path.suffix == '.json':
             return self._json_plugin(path), None
-        return self._python_plugin(path), None
+        return self._python_plugin(path)
 
     def _json_plugin(self, path: Path) -> dict:
         try:
@@ -323,7 +327,7 @@ class PluginDiscovery:
         """插件名带上作用域：两个工作区里有同名文件也不冲突（内核按名字认插件）。"""
         return f'plugin-file/{self.scope or "global"}/{path.name}'
 
-    def _python_plugin(self, path: Path) -> Any:
+    def _python_plugin(self, path: Path) -> tuple[Any, Any]:
         """源码直读编译执行：不走 import 缓存，热重载才看得见改动（与内核 loader 同一手法）。
 
         `.apply` 外面包一层**作用域标记**（`PLUGIN_SCOPE`）：插件自己 `contribute(fragment)`
@@ -336,9 +340,18 @@ class PluginDiscovery:
         plugin = getattr(module, 'plugin', None)
         if plugin is None:
             raise StructureError('DECL_PLUGIN', f'{path.name} 里没有 plugin 对象')
+        defaults = getattr(module, 'default_config', None)
+        if callable(defaults):
+            config = defaults()
+        elif isinstance(plugin, dict) and plugin.get('Config') is not None:
+            # 有 Config 却没给 default_config()：喂一个空配置，让 schema 的 default 生效、
+            # 校验真的跑一遍（必填缺了就按契约**拒绝装载**，而不是把 None 塞给插件）。
+            config = {}
+        else:
+            config = None
         if not self.scope or not isinstance(plugin, dict) or 'apply' not in plugin:
-            return plugin
-        return {**plugin, 'apply': self._scoped(plugin['apply'])}
+            return plugin, config
+        return {**plugin, 'apply': self._scoped(plugin['apply'])}, config
 
     def _scoped(self, apply: Any) -> Any:
         """把插件的作用域在装载期标进 `PLUGIN_SCOPE`（同步/异步 apply 都覆盖）。"""

@@ -28,7 +28,7 @@
 | `anchor` | 必填，骨架锚点之一：`entry` / `pre_model` / `post_model` / `post_tools` / `finish` |
 | `order` | 选填，同一锚点上多片段时的排序（小在前） |
 | `chain` | 必填非空；**顺序就是执行顺序**；每项必须有 `name` 与 `interface` |
-| `interface` | **服务名**：已经有插件 `ctx.provide('fetch', ...)` 才能装载 |
+| `interface` | **服务名**：已经有插件 `ctx.provide('fetch', ...)` 才能装载；先 `inspect_graph` 看 `services`（`callable: true` 的才能直接当节点） |
 | `reads` / `writes` | 选填，声明用到的通道（`reads` 不强制，`writes` 会被校验命名空间） |
 | `channels` | 选填，声明自己的通道；**不能写 `reducer`**（合并语义是代码） |
 
@@ -66,6 +66,9 @@ plugin = {'apply': apply, 'name': 'workspace/fetch', 'inject': ['tools']}
   别在模块顶层注册——那不在任何 fiber 上，卸不掉。
 - `Config` 用 `Schema` 声明（`Schema.string()/integer()/boolean()/array(...)/object({...})`），
   配上 `default_config()` 返回默认值（通常引用 `.env` 的总体配置）。**校验不过 = 拒绝装载**。
+  只声明 `Config` 不给 `default_config()` 也行：那时吃 schema 里的 `.default(...)`；
+  必填字段既没默认值又没人给配置 = 拒绝装载（不是"悄悄给个 None"）。
+  两个入口都吃这份配置：内置插件由装配根调 `default_config()`，插件库里的文件由发现器调。
 - 需要异步清理（连接、任务）用 `ctx.cleanup(fn)` 或 `ctx.resource.acquire(open_fn)`；
   需要后台任务用 `ctx.spawn(coro)`——两者卸载时都会收干净。
 - 想贡献**片段**（图里多一条链）就在 `apply` 里 `ctx.structure.contribute(Fragment(...))`；

@@ -176,8 +176,26 @@ class GraphTools(Service):
             payload['scope'] = scope
             payload['report'] = graph.report(scope)
             payload['spec'] = graph.spec(scope)
+            payload['services'] = self._services()
             payload['recent'] = await graph.recent(scope, limit=10)
         return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    def _services(self) -> list[dict[str, Any]]:
+        """当前有哪些服务名，可作为片段的 `interface`（可调用的才能直接当节点实现）。
+
+        没有这份清单，模型写纯 `.json` 片段时只能靠猜服务名（`INTERFACE_MISSING` 只说"没有实现"，
+        不说"有哪些"）。声明过 ≠ 此刻可用：这里只报**当前拿得到值**的。
+        """
+        reflect = getattr(self._service_ctx, 'reflect', None)
+        if reflect is None:
+            return []
+        out = []
+        for name in reflect.names():
+            value = self._service_ctx.get(name, strict=False)
+            if value is None:
+                continue
+            out.append({'name': name, 'callable': callable(value)})
+        return out
 
     async def _submit(self, kind: str, name: str, text: str) -> str:
         libraries = self._service_ctx.get('plugins')

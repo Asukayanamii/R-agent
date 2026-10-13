@@ -132,6 +132,15 @@ class ReflectService:
         return self.labels.get(name)
 
     # ================================================================ 查询
+    def names(self, kind: str | None = 'service') -> list[str]:
+        """当前**声明过**的属性名（默认只要服务）。给人看、给工具看，不参与解析。
+
+        注意：声明过 ≠ 此刻可用——提供方可能在 PENDING 或已卸载。可用性用 `get(...)` 判。
+        """
+        return sorted(
+            name for name, prop in self.props.items() if kind is None or prop.kind == kind
+        )
+
     def _get_impl(self, ctx: Any, name: str, strict: bool = True) -> Impl | None:
         key = self.label_of(ctx, name)
         if key is None:

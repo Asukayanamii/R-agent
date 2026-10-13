@@ -233,6 +233,63 @@ async def test_broken_file_is_not_retried_every_scan(tmp_path):
     assert third.loaded == ['broken.json（工作区）']
 
 
+async def test_python_plugin_uses_its_default_config(tmp_path):
+    """发现来的 `.py` 插件同样走 `default_config()`（与内置插件走容器时一条约定）。
+
+    技能里教的"默认值引用 `.env` 的总体配置"就是靠它；实现里漏掉的话，插件库里的挂件会静默
+    只吃 schema 默认值（真应用里表现为"配置明明是那么写的，插件拿到的却是空"）。
+    """
+    runtime = await make_runtime_with_impl()
+    directory = plugins_dir(tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / 'from_default.py').write_text(
+        'from app.kernel import Schema, Service\n'
+        '\n'
+        'class Config(Schema):\n'
+        "    greeting = Schema.string().default('schema-default')\n"
+        '\n'
+        'def default_config():\n'
+        "    return {'greeting': 'from-default-config'}\n"
+        '\n'
+        'class Greeter(Service):\n'
+        '    def __init__(self, ctx, config=None):\n'
+        "        super().__init__(ctx, 'greeter_a')\n"
+        "        self.greeting = str((config or {}).get('greeting'))\n"
+        '\n'
+        'def apply(ctx, config=None):\n'
+        '    Greeter(ctx, config)\n'
+        '\n'
+        "plugin = {'apply': apply, 'name': 'workspace/from_default', 'Config': Config}\n",
+        encoding='utf-8',
+    )
+    (directory / 'from_schema.py').write_text(
+        'from app.kernel import Schema, Service\n'
+        '\n'
+        'class Config(Schema):\n'
+        "    greeting = Schema.string().default('schema-default')\n"
+        '\n'
+        'class Greeter(Service):\n'
+        '    def __init__(self, ctx, config=None):\n'
+        "        super().__init__(ctx, 'greeter_b')\n"
+        "        self.greeting = str((config or {}).get('greeting'))\n"
+        '\n'
+        'def apply(ctx, config=None):\n'
+        '    Greeter(ctx, config)\n'
+        '\n'
+        "plugin = {'apply': apply, 'name': 'workspace/from_schema', 'Config': Config}\n",
+        encoding='utf-8',
+    )
+    approve(tmp_path, 'from_default.py', 'from_schema.py')
+
+    report = await PluginDiscovery(
+        runtime.ctx, global_dir=None, workspace=tmp_path, watch=False
+    ).scan()
+
+    assert sorted(report.loaded) == ['from_default.py（工作区）', 'from_schema.py（工作区）']
+    assert runtime.ctx.get('greeter_a').greeting == 'from-default-config'
+    assert runtime.ctx.get('greeter_b').greeting == 'schema-default'
+
+
 async def test_watch_loop_reverts_after_file_removal(tmp_path):
     """热重载：轮询看得见删除，结构来源自动撤销；图在下一个回合边界回到原样。"""
     runtime = await make_runtime_with_impl()
