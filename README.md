@@ -14,11 +14,11 @@
 | 装了什么 | FastAPI + SSE + 调试前端 + 桌面模式，一套配齐 | 保留图的编排与事件协议，应用形态交给插件 |
 | 往哪走 | 好用 | 通用、可插拔 |
 
-**内核提取已落地一部分**（阶段 A–C）：插件内核内联在 `app/kernel/`，装配层（`app/harness/`：
-片段契约、合成器、版本、资产路由）与三个内置插件（`loop` / `protocol` / `webui`）都已就位，
-`container.py` 也从手工装配换成了内核 Context。**还没做**：其余内置插件（工具 / 压缩 / 审批 /
-上下文 / 模型 / 存储 / 沙箱）、插件发现与信任、热重载、agent 自改图；路线图的另外两件事
-（System-1 路由、自改进）也没开始。
+**内核提取已落地一部分**（阶段 A–D）：插件内核内联在 `app/kernel/`，装配层（`app/harness/`：
+片段契约、合成器、版本、资产路由、节点壳）与八个内置插件（`loop` / `protocol` / `toolbox` /
+`compaction` / `approvals` / `context` / `exporters` / `webui`）都已就位，`container.py` 也从
+手工装配换成了内核 Context。**还没做**：`model` / `retry` / `store` / `sandbox` 这四个内置
+插件，插件发现与信任、热重载、agent 自改图；路线图的另外两件事（System-1 路由、自改进）也没开始。
 
 ## 目标形态：LangGraph 的执行图 × Cordis 的装配图
 
@@ -83,12 +83,13 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 把「能力」和「装配」拆开：工具、技能、审批、压缩、存储各自成为一个插件，依赖靠声明而不是 import
 具体实现，生命周期跟着容器走（装上即生效、卸下即清理）。现在换一个实现要动装配根，之后只是换一个插件。
 
-**进度（阶段 A–C）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
-（`app/harness/`：锚点插链、动态 schema、两段校验、版本与租约）；骨架 `loop`、协议 `protocol`、
-前端 `webui` 三个内置插件；`/ui` 改成表驱动的动态资产路由（卸下插件即 404，`/chat/*` 照常）；
-容器换成 Context 装配（必需插件缺了启动即失败）。**未做**：toolbox / compaction / approvals /
-context / exporters / model / retry / store / sandbox 这些内置插件，插件发现与信任
-（工作区 `.my_agent/plugins/`）、热重载、agent 自改图的工具。
+**进度（阶段 A–D）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
+（`app/harness/`：锚点插链、动态 schema、两段校验、版本与租约、节点壳与熔断、合成报告）；
+八个内置插件（骨架 `loop`、协议 `protocol`、工具箱 `toolbox`、压缩 `compaction`、
+审批 `approvals`、上下文 `context`、观测 `exporters`、前端 `webui`）；工具集可在**运行时**
+增删（下一次模型调用生效、不需要重建图）；`/ui` 改成表驱动的动态资产路由；容器换成
+Context 装配（必需插件缺了启动即失败）。**未做**：`model` / `retry` / `store` / `sandbox`
+四个内置插件，插件发现与信任（工作区 `.my_agent/plugins/`）、热重载、agent 自改图的工具。
 
 ### 2. 节点路由：Jev 类 System One 决策模型
 
@@ -226,6 +227,9 @@ python -m uvicorn app.main:app --reload --port 8000
 | `message_end` | 本条消息结束，携带 `message_id` 与 `usage` |
 | `error` | 出错，`code` 与 `Result` 语义一致 |
 | `done` | 流结束，必为最后一帧 |
+| `graph_updated` | 结构相对该会话上次运行变了：带新版本号、结构哈希与 mermaid 源码（前端可折叠卡片） |
+| `toolset_updated` | 能力集（工具）变了：下一次模型调用就会带上（前端提示新清单） |
+| `plugin_failed` | 插件节点失败**已收口**：这一步跳过、会话继续；连续失败到阈值整条片段自动停用 |
 
 前端只需 `switch (type)`，**未知 type 静默忽略**，后端新增事件不会影响已上线前端。
 `error` 与 `done` 由 `builtin/protocol` 的编码层统一收口，实现类无需产出。
@@ -441,8 +445,10 @@ description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时
 
 ## 人工确认
 
-`app/agent/tools/__init__.py` 里 `APPROVAL_REQUIRED` 内的工具，执行前逐个征求确认。
-**它目前是空的**——编码场景下每条命令都点确认会很烦。把 `"bash"` 加进去即可启用。
+需要确认的工具名单现在是**审批插件的配置**（`builtin/approvals`，服务 `approvals`）：
+装配时传 `{"required": [...]}`，例如 `{"required": ["bash"]}`。
+**默认名单是空的**——编码场景下每条命令都点确认会很烦。
+名单是**收紧类**能力：每次执行现取，改了即时生效（不用等回合边界）。
 
 ```
 agent → tools（审批 + 执行） → agent
@@ -536,7 +542,8 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 
 app/kernel/       插件内核    内联的 Cordis 版内核（不依赖 app.*，整体可搬走）
 app/harness/      装配层      片段契约 → 合成器 → 版本；租约；资产表与动态路由
-app/plugins/      插件        builtin/loop（骨架）、builtin/protocol（wire 形状 + SSE）、builtin/webui（前端）
+app/plugins/      插件        builtin/ 下八个：loop（骨架）、protocol、toolbox、compaction、
+                              approvals、context、exporters、webui（前端资产）
 app/container.py  装配根      一串 ctx.plugin(...) + 服务注册；必需插件缺了启动即失败
 ```
 
@@ -602,7 +609,7 @@ app/container.py  装配根      一串 ctx.plugin(...) + 服务注册；必需�
 | 加工具 | `app/agent/tools/` 下新建文件，在 `__init__.py` 的 `TOOLS` 里注册 |
 | 加技能 | `<工作区>/.my_agent/skills/<名字>/SKILL.md`，或全局库 `~/.my_agent/skills`；**不用改代码** |
 | 加项目约定 | 工作区（或任一祖先目录）放 `AGENTS.md`；同目录要覆盖它就用 `AGENTS.override.md` |
-| 加需审批的工具 | 把工具名加进同文件的 `APPROVAL_REQUIRED` |
+| 加需审批的工具 | 装配时给 `builtin/approvals` 传 `{"required": ["bash"]}`（即时生效） |
 | 换存储 | `app/container.py` 里换 checkpointer |
 | 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在容器里替换 |
 | 换事件类型 | `app/plugins/builtin/protocol/events.py`（并 bump 协议版本），前端同步加一个 `case` |
