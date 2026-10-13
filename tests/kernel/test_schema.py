@@ -73,3 +73,17 @@ def test_unknown_keys_are_preserved():
 def test_optional_fields_are_omitted():
     schema = Schema.object({'a': Schema.string(), 'b': Schema.string().required()})
     assert schema.validate({'b': 'x'}) == {'b': 'x'}
+
+
+def test_validate_none_returns_none_not_the_missing_sentinel():
+    """整体缺省（None）归一化成 None，而不是内部的 MISSING 哨兵。
+
+    哨兵泄给插件就是 `'object' object is not iterable` 那类难查的错（实测踩到过）。
+    """
+    schema = Schema.object({'model': Schema.string().default('x')})
+    assert schema.validate(None) is None
+
+    class Config(Schema):
+        required = Schema.array(Schema.string()).default([])
+
+    assert Config.validate(None) is None

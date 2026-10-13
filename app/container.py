@@ -53,25 +53,47 @@ def _provide(ctx: Context, name: str, value: object) -> None:
 
 
 async def _load_plugins(ctx: Context) -> None:
-    """装配内置插件：协议必需、前端可选（失败只降级，不带崩内核）。
+    """装配内置插件：必需项缺了启动失败；可选项失败只降级（功能退化，逐项点名）。
 
-    顺序有意义：协议先上——`webui` 用 `requires: "protocol:v1"` 依赖它的形状表，
-    契约不满足就**拒绝装载**（§2.8：形状不对，等不来）；`loop` 由 HarnessRuntime 装载。
+    顺序有意义：协议先上（`webui` 依赖 `protocol:v1`）；工具箱/压缩/上下文都在 `loop`
+    之前——`loop` 在装载时就按服务组装骨架（可选服务缺了就退化）。
     """
+    from app.config import COMPACT_ENABLED
     from app.harness.assets import AssetRegistry
-    from app.plugins.builtin import protocol, webui
+    from app.plugins.builtin import (
+        approvals,
+        compaction,
+        context,
+        exporters,
+        protocol,
+        toolbox,
+        webui,
+    )
 
-    # 界面类接缝（ctx.assets）：界面插件把静态资产挂到这张表上，装载/卸载都不动路由表
+    # 界面类接缝（ctx.assets）：界面插件把静态资产挂到这张表上，装卸都不动路由表
     AssetRegistry(ctx)
 
-    protocol_fiber = ctx.plugin(protocol.plugin, essential=True)
-    await protocol_fiber
+    # 必需：协议（wire 形状与编码）、工具箱（工具服务，loop 的服务依赖）
+    await ctx.plugin(protocol.plugin, essential=True)
+    await ctx.plugin(toolbox.plugin, essential=True)
 
-    try:
-        fiber = ctx.plugin(webui.plugin)
-        await fiber
-    except Exception as error:  # noqa: BLE001 - 可选插件的任何装载失败都只降级
-        logger.warning("可选插件 builtin/webui 未装载，/ui 将返回 404：%s", error)
+    # 可选：装载失败只降级（点名但不带崩内核）
+    optional = [
+        ('builtin/compaction', compaction, None),
+        ('builtin/context', context, None),
+        ('builtin/approvals', approvals, None),
+        ('builtin/exporters', exporters, None),
+        ('builtin/webui', webui, None),
+    ]
+    if not COMPACT_ENABLED:
+        optional = [item for item in optional if item[0] != 'builtin/compaction']
+        logger.info('上下文压缩已关闭（COMPACT_ENABLED=0）：不装载压缩插件，compact 节点为透传')
+
+    for name, module, config in optional:
+        try:
+            await ctx.plugin(module.plugin, config)
+        except Exception as error:  # noqa: BLE001 - 可选插件的任何装载失败都只降级
+            logger.warning('可选插件 %s 未装载：%s', name, error)
 
 
 async def _build_runner(ctx: Context) -> AgentRunner:

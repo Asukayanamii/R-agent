@@ -28,6 +28,7 @@ from langgraph.graph import END, START, StateGraph, add_messages
 
 from app.kernel import Service
 
+from app.harness.circuit import FailureLedger, wrap_node
 from app.harness.fragment import (
     END_NODE,
     KERNEL_CHANNELS,
@@ -155,24 +156,32 @@ def build_state_type(channels: Mapping[str, ChannelSpec], name: str) -> type:
 
 
 def make_stamp_node(
-    *, version_id: int, structure_hash: str, base_id: str
+    *,
+    version_id: int,
+    structure_hash: str,
+    base_id: str,
+    capabilities: Callable[[], dict[str, Any]] | None = None,
 ) -> Callable[..., Any]:
     """内置 ``stamp`` 的实现：每轮第一个写入结构戳（§5.3）。
 
     戳里必须是"**这一个版本**"的 id 与哈希——那是装配时才知道的东西，
     所以骨架只声明位置（``interface="stamp"``），实现由装配器在这里注入。
+
+    ``capabilities`` 每次执行时现取（能力集随时可变）：结构版本与能力集**分开记**，
+    `toolset_updated` 事件靠它比对"这个会话上次看到的能力变了没有"。
     """
 
     async def stamp(state: dict) -> dict:
-        return {
-            'harness': {
-                'version': version_id,
-                'structure_hash': structure_hash,
-                'at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-                'base': base_id,
-                'protocol': None,  # 协议插件（builtin/protocol）落地后填版本号
-            }
+        harness: dict[str, Any] = {
+            'version': version_id,
+            'structure_hash': structure_hash,
+            'at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            'base': base_id,
+            'protocol': None,  # 协议插件（builtin/protocol）落地后填版本号
         }
+        if capabilities is not None:
+            harness['capabilities'] = capabilities()
+        return {'harness': harness}
 
     return stamp
 
@@ -316,8 +325,15 @@ def compose(
     version_id: int,
     checkpointer: BaseCheckpointSaver,
     resolve_interface: Callable[[str], Any] | None = None,
+    failures: FailureLedger | None = None,
+    capabilities: Callable[[], dict[str, Any]] | None = None,
 ) -> GraphVersion:
-    """把片段集合合成一个编译好的图版本；任何校验失败都抛 StructureError。"""
+    """把片段集合合成一个编译好的图版本；任何校验失败都抛 StructureError。
+
+    ``failures`` 传入失败账本后，**插件贡献的节点**会被包进壳（失败收口 + 熔断）；
+    骨架节点不包——内核 bug 要上抛（§4.2）。
+    ``capabilities`` 是能力清单的现取值（进结构戳），与结构版本分开记。
+    """
     ordered = list(fragments)
     bases = [item for item in ordered if item.role == ROLE_BASE]
     if len(bases) != 1:
@@ -356,6 +372,7 @@ def compose(
 
     warnings: list[str] = []
     nodes: dict[str, NodeSpec] = {node.name: node for node in base.nodes}
+    owners: dict[str, str | None] = {node.name: None for node in base.nodes}
     edges: list[tuple[str, str]] = [
         (edge.source, edge.target)
         for edge in base.edges
@@ -382,6 +399,7 @@ def compose(
                         'NODE_CONFLICT', f'节点名与既有结构冲突：{node.name!r}'
                     )
                 nodes[node.name] = node
+                owners[node.name] = fragment.id
                 chain.append(node)
         if not chain:
             continue  # 只声明通道、不挂节点：合法
@@ -437,7 +455,10 @@ def compose(
             f'（实现由装配器注入，结构戳要带本版本的 id 与哈希）',
         )
     stamp_impl = make_stamp_node(
-        version_id=version_id, structure_hash=structure_hash, base_id=base.id
+        version_id=version_id,
+        structure_hash=structure_hash,
+        base_id=base.id,
+        capabilities=capabilities,
     )
 
     impls: dict[str, Callable[..., Any]] = {}
@@ -455,6 +476,13 @@ def compose(
                 f'抽象节点 {name!r} 的实现 {node.interface!r} 暂时不可用（服务未提供）',
             )
         impls[name] = resolved
+
+    # ---- 节点壳：插件贡献的节点包进壳（失败收口 + 熔断），骨架节点不包 ----
+    if failures is not None:
+        for name in list(impls):
+            owner = owners.get(name)
+            if owner is not None:
+                impls[name] = wrap_node(name, impls[name], owner, failures)
 
     # ---- 图级校验 ----
     _check_connectivity(

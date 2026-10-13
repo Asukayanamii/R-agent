@@ -27,6 +27,10 @@ class EventType(str, Enum):
     MESSAGE_END = "message_end"
     ERROR = "error"
     DONE = "done"
+    # 结构/能力的变化与插件失败：加事件类型属于非破坏变更（前端未知类型静默忽略）
+    GRAPH_UPDATED = "graph_updated"
+    TOOLSET_UPDATED = "toolset_updated"
+    PLUGIN_FAILED = "plugin_failed"
 
 
 class ThreadData(BaseModel):
@@ -285,6 +289,29 @@ class ThreadListResponse(BaseModel):
     )
 
 
+class GraphUpdatedData(BaseModel):
+    """结构已更新：这个会话上一次跑在旧结构上，这一轮换了新版本。"""
+
+    version: int = Field(..., description="新的图版本号（进程内自增）")
+    structure_hash: str = Field(..., description="结构哈希，与合成报告对账用")
+    base: str = Field(..., description="骨架插件 id")
+    mermaid: str = Field("", description="当前图的 mermaid 源码（前端可折叠卡片展示）")
+
+
+class ToolsetUpdatedData(BaseModel):
+    """能力集（工具）已更新：下一次模型调用就会带上新快照。"""
+
+    tools: list[str] = Field(default_factory=list, description="当前工具名清单")
+
+
+class PluginFailedData(BaseModel):
+    """插件节点失败：这一步已跳过、会话继续；连续失败到阈值会停用整条片段。"""
+
+    fragment: str = Field(..., description="片段 id")
+    node: str = Field(..., description="节点名")
+    error: str = Field(..., description="异常原文")
+
+
 class ThreadEvent(BaseModel):
     type: Literal[EventType.THREAD] = EventType.THREAD
     data: ThreadData
@@ -330,6 +357,21 @@ class DoneEvent(BaseModel):
     data: DoneData = DoneData()
 
 
+class GraphUpdatedEvent(BaseModel):
+    type: Literal[EventType.GRAPH_UPDATED] = EventType.GRAPH_UPDATED
+    data: GraphUpdatedData
+
+
+class ToolsetUpdatedEvent(BaseModel):
+    type: Literal[EventType.TOOLSET_UPDATED] = EventType.TOOLSET_UPDATED
+    data: ToolsetUpdatedData
+
+
+class PluginFailedEvent(BaseModel):
+    type: Literal[EventType.PLUGIN_FAILED] = EventType.PLUGIN_FAILED
+    data: PluginFailedData
+
+
 AgentEvent = Annotated[
     Union[
         ThreadEvent,
@@ -341,6 +383,9 @@ AgentEvent = Annotated[
         MessageEndEvent,
         ErrorEvent,
         DoneEvent,
+        GraphUpdatedEvent,
+        ToolsetUpdatedEvent,
+        PluginFailedEvent,
     ],
     Field(discriminator="type"),
 ]

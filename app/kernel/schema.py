@@ -120,12 +120,17 @@ class Schema(metaclass=SchemaMeta):
 
     # ------------------------------------------------------------------ 校验
     def _validate_instance(self, value: Any) -> Any:
-        """校验并归一化配置；失败时抛出聚合了全部问题的 ``ValidationError``。"""
+        """校验并归一化配置；失败时抛出聚合了全部问题的 ``ValidationError``。
+
+        整体缺省（``None``）时归一化成 ``None``——**不能把内部的 MISSING 哨兵泄出去**：
+        桥接层（``resolve_config``）会把这个结果直接交给插件，
+        哨兵到了插件手里就是 `'object' object is not iterable` 那类难查的错（实测踩到过）。
+        """
         issues: list[Issue] = []
         result = self._validate_field(value, [], issues)
         if issues:
             raise ValidationError(issues)
-        return result
+        return None if result is MISSING else result
 
     def _validate_field(self, value: Any, path: list[Any], issues: list[Issue]) -> Any:
         """校验单个字段并应用 ``transform``（容器 schema 用它递归校验子字段）。"""

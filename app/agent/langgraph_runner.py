@@ -69,14 +69,38 @@ class LangGraphRunner:
         self, thread_id: str, message: str, workspace: str | None = None
     ) -> AsyncIterator[BaseModel]:
         inputs = {"messages": [HumanMessage(content=message)]}
+        config = self._config(thread_id, workspace)
         async with self.runtime.lease(thread_id) as version:
+            snapshot = await version.graph.aget_state(config)
+            for notice in self._change_notices(version, snapshot.values or {}):
+                yield notice
             async for event in self.protocol.translate(
                 version.graph,
                 thread_id=thread_id,
-                config=self._config(thread_id, workspace),
+                config=config,
                 inputs=inputs,
             ):
                 yield event
+
+    def _change_notices(self, version: Any, values: dict) -> list[BaseModel]:
+        """本轮开始时的"结构/能力变了"提示——相对这个会话上次落下的结构戳（§4.1 / §4.4）。
+
+        新会话没有戳（没有"变了"可言）；旧会话的戳里没有 capabilities 字段，
+        会补发一条 toolset_updated，正好把当前能力集告诉前端。
+        """
+        stamp = values.get("harness") or {}
+        if not stamp:
+            return []
+        notices: list[BaseModel] = []
+        if stamp.get("structure_hash") != version.structure_hash:
+            notices.append(
+                self.protocol.graph_updated_event(
+                    version, mermaid=self.runtime.mermaid_of(version)
+                )
+            )
+        if stamp.get("capabilities") != self.runtime.capabilities():
+            notices.append(self.protocol.toolset_updated_event(self.runtime.tool_names()))
+        return notices
 
     async def resume(
         self, thread_id: str, value: str, workspace: str | None = None

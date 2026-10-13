@@ -1,16 +1,21 @@
 """
 工具执行：人工审批、并行调用、失败与中断的收口。
 
-不用 LangGraph 自带的 `ToolNode`，原因见 `run_tools` 的说明。执行语义都在这一个文件里：
+不用 LangGraph 自带的 `ToolNode`，原因见 `make_tools_node` 的说明。执行语义都在这一个文件里：
 
 - 工具"没做成"（`common.fail()` 抛 `ToolException`）→ 带 `status=error` 的回执，模型照旧收到原话
 - 中断（工具内部的沙箱授权询问）→ **原样往上抛**，让节点停下来等人工确认
 - 同一轮的多个调用并行跑，第一个中断/异常出现就取消其余
+
+**依赖从服务注入**（阶段 D）：注册表（服务 `tools`，`builtin/toolbox` 提供）与审批策略
+（服务 `approvals`，可选）都不是模块级状态——**每次调用现查**，所以运行时增删工具/改审批
+不需要重建图（§4.1）。
 """
 
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import ToolException
@@ -21,11 +26,8 @@ from langgraph.types import interrupt
 
 from app.agent.messages import error_message, text_of
 from app.agent.runtime import current_workspace
-from app.agent.tools import APPROVAL_REQUIRED, TOOLS
 
 logger = logging.getLogger(__name__)
-
-TOOL_MAP = {tool.name: tool for tool in TOOLS}
 
 REJECT_MESSAGE = "用户拒绝执行该操作。"
 
@@ -42,8 +44,10 @@ def _workspace_token(config: dict):
     return current_workspace.set(Path(workspace))
 
 
-async def run_tools(state: MessagesState):
+def make_tools_node(registry: Any):
     """
+    构造 `tools` 节点（抽象节点的实现：由工具箱服务给出）。
+
     逐个征求人工确认，然后并行执行通过的调用。
 
     不用 ToolNode 的原因：它会执行 AIMessage 里的全部调用（含已被回绝的），
@@ -52,34 +56,39 @@ async def run_tools(state: MessagesState):
 
     审批仍然一个一个来：interrupt 的恢复值是按发生顺序回填的，一次只弹一张卡
     才谈得上"回答的是哪一个"。执行阶段则并行，见 run_calls。
+    审批名单每次现取（`registry.approvals()`）：收紧类变更即时生效（§4.3）。
     """
-    config = get_config()
-    calls = state["messages"][-1].tool_calls
 
-    approved: dict[str, bool] = {}
-    for call in calls:
-        if call["name"] in APPROVAL_REQUIRED:
-            decision = interrupt(
-                {
-                    "prompt": f"请求调用 {call['name']}，参数 {call['args']}",
-                    "options": ["确认", "取消"],
-                }
-            )
-            approved[call["id"]] = decision == "确认"
-            logger.info("工具审批 name=%s 决定=%s", call["name"], decision)
+    async def run_tools(state: MessagesState):
+        config = get_config()
+        calls = state["messages"][-1].tool_calls
 
-    token = _workspace_token(config)
-    try:
-        results = await run_calls(calls, config, approved)
-    finally:
-        if token is not None:
-            current_workspace.reset(token)
+        approved: dict[str, bool] = {}
+        for call in calls:
+            if registry.requires_approval(call["name"]):
+                decision = interrupt(
+                    {
+                        "prompt": f"请求调用 {call['name']}，参数 {call['args']}",
+                        "options": ["确认", "取消"],
+                    }
+                )
+                approved[call["id"]] = decision == "确认"
+                logger.info("工具审批 name=%s 决定=%s", call["name"], decision)
 
-    return {"messages": results}
+        token = _workspace_token(config)
+        try:
+            results = await run_calls(calls, config, approved, registry)
+        finally:
+            if token is not None:
+                current_workspace.reset(token)
+
+        return {"messages": results}
+
+    return run_tools
 
 
 async def invoke_call(
-    call: dict, config: dict, approved: dict[str, bool]
+    call: dict, config: dict, approved: dict[str, bool], registry: Any
 ) -> ToolMessage:
     """
     跑一次调用，把"没做成"收成带 error 标记的回执。
@@ -90,7 +99,10 @@ async def invoke_call(
         logger.warning("工具被拒绝 name=%s", call["name"])
         return ToolMessage(content=REJECT_MESSAGE, tool_call_id=call["id"])
 
-    tool = TOOL_MAP.get(call["name"])
+    # 执行前广播一次（观测/审计的挂点；拦截类策略走审批名单或服务事件）
+    registry.pre_execute(call)
+
+    tool = registry.get(call["name"])
     if tool is None:
         logger.warning("模型要调未知工具 name=%s", call["name"])
         return error_message(call["id"], f"未知工具：{call['name']}")
@@ -131,7 +143,7 @@ async def invoke_call(
 
 
 async def run_calls(
-    calls: list[dict], config: dict, approved: dict[str, bool]
+    calls: list[dict], config: dict, approved: dict[str, bool], registry: Any
 ) -> list[ToolMessage]:
     """
     同一轮的多个调用并行执行。
@@ -149,7 +161,7 @@ async def run_calls(
 
     async def run(call: dict) -> ToolMessage:
         try:
-            return await invoke_call(call, config, approved)
+            return await invoke_call(call, config, approved, registry)
         except BaseException as exc:
             # 记"实际发生"的先后，run_calls 结尾要用（为什么见那里）
             happened.append(exc)

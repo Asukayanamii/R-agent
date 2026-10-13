@@ -857,6 +857,10 @@ const handlers = {
   message_end: (d, ctx) => ctx.messageEnd(d),
   error: (d, ctx) => ctx.error(d),
   done: (d, ctx) => { ctx.sawDone = true; },
+  // 结构 / 能力的变化与插件失败：未知类型本来就静默忽略，这里补上渲染即可
+  graph_updated: (d, ctx) => ctx.graphUpdated(d),
+  toolset_updated: (d, ctx) => ctx.toolsetUpdated(d),
+  plugin_failed: (d, ctx) => ctx.pluginFailed(d),
 };
 
 /* ============================================================
@@ -1555,6 +1559,32 @@ function compactionNote(info) {
   return box;
 }
 
+/* 结构 / 能力类提示卡片（graph_updated / toolset_updated / plugin_failed）：默认收起 */
+function structNote(title, detail, summaryLabel) {
+  const box = el("div", "compact");
+  box.appendChild(el("div", null, title));
+  if (detail) {
+    const det = document.createElement("details");
+    const sum = document.createElement("summary");
+    sum.textContent = summaryLabel || "详情";
+    det.appendChild(sum);
+    det.appendChild(el("pre", "csum", detail));
+    // 装了 mermaid（可选依赖，不走 CDN）就把源码渲染成图；没装就展示源码
+    if (window.mermaid && summaryLabel === "当前图的 mermaid 源码") {
+      const graph = el("div", "mermaid");
+      graph.textContent = detail;
+      det.appendChild(graph);
+      try {
+        window.mermaid.run({ nodes: [graph] });
+      } catch (err) {
+        console.warn("[my-agent] mermaid 渲染失败，展示源码", err);
+      }
+    }
+    box.appendChild(det);
+  }
+  return box;
+}
+
 function addStaticTurn(role, content, toolCalls = []) {
   if (role === "user") { addUserTurn(content); return; }
   const turn = el("div", "turn bot");
@@ -1634,6 +1664,38 @@ function newTurn() {
       // 压缩发生在模型回复之前，但这一刻早前的轮次已经画在屏幕上了；精确位置只有重开
       // 会话时才回放得出（见 openThread）。这里就近插在当前回复顶上，说清发生了什么。
       body.insertBefore(compactionNote(d), body.firstChild);
+      toBottom();
+    },
+
+    graphUpdated(d) {
+      // 结构与上次跑不同：卡片带上 mermaid 源码（装了 mermaid 会渲染，没装看源码）
+      const hash = String(d.structure_hash || "").slice(0, 12);
+      body.insertBefore(
+        structNote(`结构已更新：图 v${d.version}（${hash}）`, d.mermaid, "当前图的 mermaid 源码"),
+        body.firstChild,
+      );
+      toBottom();
+    },
+
+    toolsetUpdated(d) {
+      const names = d.tools || [];
+      body.insertBefore(
+        structNote(`能力集已更新：${names.length} 个工具`, names.join("、"), "工具清单"),
+        body.firstChild,
+      );
+      toBottom();
+    },
+
+    pluginFailed(d) {
+      // 失败已收口：这一轮继续跑，连续失败到阈值整条片段会被自动停用（后端报告里点名）
+      body.insertBefore(
+        structNote(
+          `插件节点失败（已跳过这一步继续跑）：${d.fragment} / ${d.node}`,
+          d.error,
+          "异常原文",
+        ),
+        body.firstChild,
+      );
       toBottom();
     },
 

@@ -1,8 +1,8 @@
 """golden：新旧实现的事件序列逐帧一致（阶段 B 完成判据）。
 
-- 旧实现 = `legacy_graph.py` 里冻结的改造前快照；
-- 新实现 = HarnessRuntime 合成（builtin/loop 骨架 + 5 个空锚点）；
-- 两边都走产品同一条路径（`translate_events`），对照：纯对话轮、一次工具调用、
+- 旧实现 = `legacy_graph.py` 里冻结的改造前快照（含它自带的工具执行实现）；
+- 新实现 = HarnessRuntime 合成（builtin/loop 骨架 + 5 个空锚点 + toolbox 服务）；
+- 两边都走产品同一条路径（协议插件的 `translate_events`），对照：纯对话轮、一次工具调用、
   审批中断 + resume，外加"跑完后的历史等价"。
 
 事件里的易变字段（run_id / message_id / interrupt id）比对前剥掉——要钉住的是**帧序列与内容**。
@@ -21,13 +21,15 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+import legacy_graph
 from legacy_graph import legacy_build_graph
 
-from app.agent import tool_calls as tc
 from app.agent.messages import build_history
-from app.plugins.builtin.protocol.mapping import translate_events
 from app.harness.runtime import HarnessRuntime
 from app.kernel import Context
+from app.plugins.builtin import approvals as approvals_plugin
+from app.plugins.builtin import toolbox as toolbox_plugin
+from app.plugins.builtin.protocol.mapping import translate_events
 
 pytestmark = pytest.mark.anyio
 
@@ -73,17 +75,21 @@ async def probe_echo(text: str) -> str:
 
 
 @pytest.fixture
-def echo_tool(monkeypatch):
-    probe_echo.name = 'echo'
-    monkeypatch.setattr(tc, 'TOOL_MAP', {**tc.TOOL_MAP, 'echo': probe_echo})
-    monkeypatch.setattr(tc, 'APPROVAL_REQUIRED', set())
-    return probe_echo
+def scenario(monkeypatch):
+    """把假工具同时接进两边：旧实现走它自己的模块级注册表，新实现走 toolbox 服务。"""
 
+    def prepare(*, approve: bool = False) -> dict:
+        probe_echo.name = 'echo'
+        monkeypatch.setitem(legacy_graph.LEGACY_TOOL_MAP, 'echo', probe_echo)
+        monkeypatch.setattr(
+            legacy_graph, 'LEGACY_APPROVAL_REQUIRED', {'echo'} if approve else set()
+        )
+        return {
+            'tools': (probe_echo,),
+            'approvals': ('echo',) if approve else (),
+        }
 
-@pytest.fixture
-def echo_tool_with_approval(echo_tool, monkeypatch):
-    monkeypatch.setattr(tc, 'APPROVAL_REQUIRED', {'echo'})
-    return echo_tool
+    return prepare
 
 
 def strip(value):
@@ -102,8 +108,14 @@ async def collect(graph, thread_id: str, inputs) -> list[dict]:
     return frames
 
 
-async def make_composed_graph(script: list, saver=None):
+async def make_composed_graph(script: list, *, saver=None, tools=(), approvals=()):
     ctx = Context()
+    await ctx.plugin(toolbox_plugin.plugin, essential=True)
+    if approvals:
+        await ctx.plugin(approvals_plugin.plugin, {'required': list(approvals)})
+    for item in tools:
+        ctx.get('tools').register(item)
+
     runtime = HarnessRuntime(
         ctx,
         checkpointer=saver or InMemorySaver(),
@@ -114,46 +126,50 @@ async def make_composed_graph(script: list, saver=None):
     return runtime
 
 
-async def run_pair(script: list, message: str, saver=None):
+async def run_pair(script: list, message: str, *, tools=(), approvals=(), saver=None):
     """旧实现与新实现各跑一轮；返回两边的图与帧序列。"""
     legacy = legacy_build_graph(
         saver or InMemorySaver(), make_scripted_model(list(script)), make_scripted_model(list(script))
     )
     legacy_frames = await collect(legacy, LEGACY_THREAD, {'messages': [HumanMessage(message)]})
 
-    runtime = await make_composed_graph(script, saver=saver)
+    runtime = await make_composed_graph(script, saver=saver, tools=tools, approvals=approvals)
     composed = runtime.versions.current.graph
     composed_frames = await collect(composed, COMPOSED_THREAD, {'messages': [HumanMessage(message)]})
     return legacy, composed, legacy_frames, composed_frames
 
 
-async def test_plain_turn_frames_identical(echo_tool):
+async def test_plain_turn_frames_identical(scenario):
     script = [ai('你好，我是假模型')]
-    legacy, composed, legacy_frames, composed_frames = await run_pair(script, '你好')
+    legacy, composed, legacy_frames, composed_frames = await run_pair(script, '你好', **scenario())
 
     assert composed_frames == legacy_frames
     assert composed_frames, '至少要有 message_end'
     assert composed_frames[-1]['type'] == 'message_end'
 
 
-async def test_tool_turn_frames_identical(echo_tool):
+async def test_tool_turn_frames_identical(scenario):
     script = [
         ai('我来调用工具', call={'name': 'echo', 'args': {'text': 'hi'}, 'id': 'call_1', 'type': 'tool_call'}),
         ai('工具用完了'),
     ]
-    legacy, composed, legacy_frames, composed_frames = await run_pair(script, '调一下 echo')
+    legacy, composed, legacy_frames, composed_frames = await run_pair(
+        script, '调一下 echo', **scenario()
+    )
 
     assert composed_frames == legacy_frames
     kinds = [frame['type'] for frame in composed_frames]
     assert 'tool_start' in kinds and 'tool_end' in kinds and 'message_end' in kinds
 
 
-async def test_interrupt_and_resume_frames_identical(echo_tool_with_approval):
+async def test_interrupt_and_resume_frames_identical(scenario):
     script = [
         ai('我来调用工具', call={'name': 'echo', 'args': {'text': 'hi'}, 'id': 'call_1', 'type': 'tool_call'}),
         ai('好的'),
     ]
-    legacy, composed, legacy_frames, composed_frames = await run_pair(script, '调一下 echo')
+    legacy, composed, legacy_frames, composed_frames = await run_pair(
+        script, '调一下 echo', **scenario(approve=True)
+    )
 
     assert composed_frames == legacy_frames
     assert any(frame['type'] == 'interrupt' for frame in composed_frames)
@@ -164,12 +180,12 @@ async def test_interrupt_and_resume_frames_identical(echo_tool_with_approval):
     assert composed_resume[-1]['type'] == 'message_end'
 
 
-async def test_history_equivalent_after_run(echo_tool):
+async def test_history_equivalent_after_run(scenario):
     script = [
         ai('我来调用工具', call={'name': 'echo', 'args': {'text': 'hi'}, 'id': 'call_1', 'type': 'tool_call'}),
         ai('工具用完了'),
     ]
-    legacy, composed, _, _ = await run_pair(script, '调一下 echo')
+    legacy, composed, _, _ = await run_pair(script, '调一下 echo', **scenario())
 
     legacy_snapshot = await legacy.aget_state({'configurable': {'thread_id': LEGACY_THREAD}})
     composed_snapshot = await composed.aget_state({'configurable': {'thread_id': COMPOSED_THREAD}})

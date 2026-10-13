@@ -20,15 +20,15 @@ from langgraph.graph import add_messages
 from langgraph.prebuilt import tools_condition
 
 from app.agent.compaction.runtime import COMPACT_NODE
-from app.agent.nodes import make_compact_node, make_model_node
-from app.agent.tool_calls import run_tools
-from app.agent.tools import TOOLS
+from app.agent.nodes import make_model_node
+from app.harness.circuit import append_failures
 from app.harness.fragment import (
     COMPACTION,
     END_NODE,
     HARNESS,
     MESSAGES,
     OUTPUT_SEAMS,
+    PLUGIN_FAILURES,
     ROLE_BASE,
     STAMP_INTERFACE,
     START_NODE,
@@ -52,8 +52,16 @@ async def _passthrough(state: dict) -> dict:
 
 def apply(ctx: Any) -> None:
     """按注入的服务组装骨架片段，贡献给结构接缝。"""
-    # 绑一次工具（与改造前一致）；阶段 D 会把 tools 抽象化，改成每次调用前对实时快照 bind。
-    model_with_tools = ctx.model.bind_tools(TOOLS)
+    # 可选依赖：压缩插件没装 → `compact` 退化成透传（与 COMPACT_ENABLED=0 同一语义）
+    if ctx.get('compaction') is not None:
+        compact_node = NodeSpec(
+            COMPACT_NODE,
+            interface='compaction',
+            reads=(MESSAGES, USAGE_ANCHOR),
+            writes=(COMPACTION, USAGE_ANCHOR),
+        )
+    else:
+        compact_node = NodeSpec(COMPACT_NODE, run=_passthrough, reads=(MESSAGES,), writes=())
 
     fragment = Fragment(
         id=PLUGIN_ID,
@@ -64,21 +72,18 @@ def apply(ctx: Any) -> None:
             # stamp 只声明位置，实现由装配器注入（结构戳要带本版本的 id 与哈希）
             NodeSpec('stamp', interface=STAMP_INTERFACE, writes=(HARNESS,)),
             NodeSpec('entry', run=_passthrough),
-            NodeSpec(
-                COMPACT_NODE,
-                run=make_compact_node(ctx.summary_model),
-                reads=(MESSAGES, USAGE_ANCHOR),
-                writes=(COMPACTION, USAGE_ANCHOR),
-            ),
+            compact_node,
             NodeSpec('pre_model', run=_passthrough),
             NodeSpec(
                 'agent',
-                run=make_model_node(model_with_tools),
+                run=make_model_node(ctx.model, ctx.tools, ctx.get('context')),
                 reads=(MESSAGES, COMPACTION),
                 writes=(MESSAGES, USAGE_ANCHOR),
             ),
             NodeSpec('post_model', run=_passthrough),
-            NodeSpec('tools', run=run_tools, reads=(MESSAGES,), writes=(MESSAGES,)),
+            # tools 是抽象节点：实现由服务 tools（builtin/toolbox）给出——
+            # 注册表与审批名单都在执行时现取，能力集变化不需要重建图
+            NodeSpec('tools', interface='tools', reads=(MESSAGES,), writes=(MESSAGES,)),
             NodeSpec('post_tools', run=_passthrough),
             NodeSpec('finish', run=_passthrough),
         ),
@@ -105,6 +110,8 @@ def apply(ctx: Any) -> None:
             ChannelSpec(COMPACTION),
             ChannelSpec(USAGE_ANCHOR),
             ChannelSpec(HARNESS),
+            # 节点壳的失败留痕（§4.2）：追加并只留最近若干条
+            ChannelSpec(PLUGIN_FAILURES, reducer=append_failures),
         ),
     )
     ctx.structure.contribute(fragment)
@@ -116,6 +123,6 @@ def apply(ctx: Any) -> None:
 plugin = {
     'apply': apply,
     'name': PLUGIN_ID,
-    'inject': ['model', 'summary_model'],
+    'inject': ['model', 'summary_model', 'tools'],
 }
 """模块级导出（约定式发现认 ``plugin`` 或 ``apply``）：带名字与依赖声明。"""

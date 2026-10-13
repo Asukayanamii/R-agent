@@ -279,6 +279,10 @@ class Fiber:
             return
         raise CordisError('INACTIVE_EFFECT')
 
+    def missing_services(self) -> list[str]:
+        """PENDING 时还缺哪些注入服务（诊断用：报告里要点名"为什么没参与"）。"""
+        return sorted(name for name in self.inject if name not in self._store)
+
     def __await__(self) -> Iterator[Any]:
         yield from self.await_().__await__()
 

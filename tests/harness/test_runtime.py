@@ -42,9 +42,18 @@ def make_runtime(ctx: Context | None = None, **kwargs) -> HarnessRuntime:
     )
 
 
-async def test_setup_loads_loop_and_composes():
-    runtime = make_runtime()
+async def make_ready_runtime(**kwargs) -> HarnessRuntime:
+    """装载 toolbox（loop 的服务依赖）并完成装配的 runtime。"""
+    from app.plugins.builtin import toolbox
+
+    runtime = make_runtime(**kwargs)
+    await runtime.ctx.plugin(toolbox.plugin, essential=True)
     await runtime.setup()
+    return runtime
+
+
+async def test_setup_loads_loop_and_composes():
+    runtime = await make_ready_runtime()
 
     version = runtime.versions.current
     assert version is not None
@@ -57,15 +66,13 @@ async def test_setup_loads_loop_and_composes():
 
 
 async def test_maybe_recompose_is_noop_when_unchanged():
-    runtime = make_runtime()
-    await runtime.setup()
+    runtime = await make_ready_runtime()
 
     assert await runtime.maybe_recompose() is False
 
 
 async def test_structure_change_takes_effect_at_next_lease():
-    runtime = make_runtime()
-    await runtime.setup()
+    runtime = await make_ready_runtime()
     first = runtime.versions.current
 
     # 模拟一个插件装载：贡献一条挂在 pre_model 上的链
@@ -101,24 +108,24 @@ async def test_structure_change_takes_effect_at_next_lease():
 
 
 async def test_essential_plugin_failure_fails_startup(monkeypatch):
-    from app.plugins.builtin import loop
+    from app.plugins.builtin import loop, toolbox
 
     broken = {
         'apply': loop.apply,
         'name': 'loop-broken',
-        'inject': ['model', 'summary_model', 'service-that-does-not-exist'],
+        'inject': ['model', 'summary_model', 'tools', 'service-that-does-not-exist'],
     }
     monkeypatch.setattr(loop, 'plugin', broken)
 
     runtime = make_runtime()
+    await runtime.ctx.plugin(toolbox.plugin, essential=True)
     with pytest.raises(CordisError) as info:
         await runtime.setup()
     assert 'loop-broken' in str(info.value)
 
 
 async def test_failed_compose_keeps_current_version():
-    runtime = make_runtime()
-    await runtime.setup()
+    runtime = await make_ready_runtime()
     first = runtime.versions.current
 
     # 插件贡献一个形状不对的片段：锚点不存在 → 装载即失败（不改变运行图）
@@ -136,7 +143,10 @@ async def test_failed_compose_keeps_current_version():
 
 async def test_foreign_structure_service_is_reused():
     """ctx 里已经有结构接缝时沿用同一个（一个应用一棵插件树、一张片段表）。"""
+    from app.plugins.builtin import toolbox
+
     ctx = Context()
+    await ctx.plugin(toolbox.plugin, essential=True)
     runtime_a = make_runtime(ctx)
     await runtime_a.setup()
 

@@ -15,7 +15,18 @@ from typing import Any
 from app.kernel import Service
 
 from .encoding import SSE_HEADERS, SSE_MEDIA_TYPE, encode_sse, sse_stream
-from .events import InterruptData, InterruptEvent, MessageEndData, MessageEndEvent, ThreadData, ThreadEvent
+from .events import (
+    GraphUpdatedData,
+    GraphUpdatedEvent,
+    InterruptData,
+    InterruptEvent,
+    MessageEndData,
+    MessageEndEvent,
+    ThreadData,
+    ThreadEvent,
+    ToolsetUpdatedData,
+    ToolsetUpdatedEvent,
+)
 from .mapping import translate_events
 
 PLUGIN_ID = 'builtin/protocol'
@@ -42,6 +53,21 @@ class ProtocolService(Service):
     def message_end_event(self, message_id: str) -> MessageEndEvent:
         """本条消息结束：不带 usage（usage 由映射层从模型输出累加）。"""
         return MessageEndEvent(data=MessageEndData(message_id=message_id))
+
+    def graph_updated_event(self, version: Any, *, mermaid: str = '') -> GraphUpdatedEvent:
+        """结构已更新：带本版本的 id/哈希与图源码（前端可折叠卡片）。"""
+        return GraphUpdatedEvent(
+            data=GraphUpdatedData(
+                version=version.id,
+                structure_hash=version.structure_hash,
+                base=version.base_id,
+                mermaid=mermaid,
+            )
+        )
+
+    def toolset_updated_event(self, tools: list[str]) -> ToolsetUpdatedEvent:
+        """能力集已更新：下一次模型调用就会带上新快照。"""
+        return ToolsetUpdatedEvent(data=ToolsetUpdatedData(tools=list(tools)))
 
     # ---------------------------------------------------------------- 编码
     @property

@@ -9,6 +9,7 @@
 """
 
 import logging
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langgraph.config import get_config
@@ -68,10 +69,15 @@ def make_compact_node(summary_model: BaseChatModel):
     return compact_context
 
 
-def make_model_node(model_with_tools: BaseChatModel):
+def make_model_node(model: BaseChatModel, registry: Any, context: Any = None):
     """
     构造模型调用节点。节点本身无状态：每轮都把 system prompt 重新拼在历史前面，
     历史来自 checkpointer。
+
+    **工具集每次调用前从快照重建绑定**（§4.1）——实测 0.1ms、请求体与复用一致（阶段 0 探针 5），
+    所以运行时加/减工具不需要重建图：下一次模型调用就能看到新能力集。
+
+    静态上下文块（项目约定 + 技能索引）来自服务 `context`（可选插件）：没装就不注入。
 
     压缩过的会话发的是"摘要 + 首条用户消息 + 切点起的原文"（只压视图，原文还在检查点里）。
     `usage_anchor` 记的是这次请求 provider 实报的 input tokens 与"覆盖到第几条**状态里的**
@@ -84,7 +90,9 @@ def make_model_node(model_with_tools: BaseChatModel):
         config = get_config()
         # 静态上下文（项目约定 + 技能索引）随工作区变，所以每轮按当前工作区重拼。
         # 同一工作区内它是稳定的：变了才动前缀缓存，见 prompts.build_system_prompt。
-        prompt = build_system_prompt((config.get("configurable") or {}).get("workspace"))
+        workspace = (config.get("configurable") or {}).get("workspace")
+        static = context.static(workspace) if context is not None else ""
+        prompt = build_system_prompt(workspace, static=static)
         if usable_compaction(compaction, len(messages)):
             prompt = with_summary(prompt, compaction["summary"])
             messages = [messages[0], *messages[compaction["from_index"] :]]
@@ -95,6 +103,7 @@ def make_model_node(model_with_tools: BaseChatModel):
                 len(messages),
             )
 
+        model_with_tools = model.bind_tools(list(registry.snapshot()))
         response = await ainvoke_with_retry(
             model_with_tools,
             [{"role": "system", "content": prompt}, *messages],

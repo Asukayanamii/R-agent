@@ -31,6 +31,7 @@ __all__ = [
     'COMPACTION',
     'USAGE_ANCHOR',
     'HARNESS',
+    'PLUGIN_FAILURES',
     'KERNEL_CHANNELS',
     'PLUGIN_PREFIX',
     'REQUIRED_NODES',
@@ -63,7 +64,9 @@ MESSAGES = 'messages'
 COMPACTION = 'compaction'
 USAGE_ANCHOR = 'usage_anchor'
 HARNESS = 'harness'
-KERNEL_CHANNELS = (MESSAGES, COMPACTION, USAGE_ANCHOR, HARNESS)
+PLUGIN_FAILURES = 'plugin_failures'
+"""节点壳的失败留痕（§4.2）：哪个片段、哪一步、异常原文；由壳写、映射层读。"""
+KERNEL_CHANNELS = (MESSAGES, COMPACTION, USAGE_ANCHOR, HARNESS, PLUGIN_FAILURES)
 """内核通道：只有骨架节点能写（校验器强制），插件通道一律 ``plugin.<片段id>.<字段>``。"""
 
 PLUGIN_PREFIX = 'plugin.'

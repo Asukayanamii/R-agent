@@ -33,6 +33,8 @@ from .events import (
     InterruptEvent,
     MessageEndData,
     MessageEndEvent,
+    PluginFailedData,
+    PluginFailedEvent,
     TextDeltaData,
     TextDeltaEvent,
     ToolEndData,
@@ -102,6 +104,19 @@ async def translate_events(
                             tokens_after=int(record.get("tokens_after") or 0),
                             summary=record.get("summary", ""),
                             count=int(record.get("count") or 0),
+                        )
+                    )
+
+            elif kind == "on_chain_end":
+                # 节点壳的失败留痕（§4.2）：状态里记了一笔，这里把它翻成前端可见的事件
+                update = event["data"].get("output")
+                failures = update.get("plugin_failures") if isinstance(update, dict) else None
+                for item in failures or []:
+                    yield PluginFailedEvent(
+                        data=PluginFailedData(
+                            fragment=str(item.get("fragment", "")),
+                            node=str(item.get("node", "")),
+                            error=str(item.get("error", "")),
                         )
                     )
 

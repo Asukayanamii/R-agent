@@ -20,12 +20,4 @@ from app.agent.tools.read import read
 from app.agent.tools.write import write
 
 TOOLS = [read, write, edit, ls, find, grep, bash, get_current_time]
-
-APPROVAL_REQUIRED: set[str] = set()
-"""
-需要人工确认后才允许执行的工具名。
-
-目前为空——把工具名加进来即可启用确认流程，例如 {"write", "edit", "bash"}。
-启用后每次调用都要在界面上点确认，编码场景下通常会很烦，所以默认关闭。
-确认机制见 langgraph_runner 的 _run_tools。
-"""
+"""内置工具清单（`builtin/toolbox` 插件装载时把它们注册进服务 `tools`）。"""

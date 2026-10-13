@@ -35,18 +35,15 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_system_prompt(workspace: str | None = None) -> str:
+def render_static_context(workspace: str | None = None) -> str:
     """
-    拼出这一轮发给模型的 system 提示词。
+    静态上下文块：项目约定（AGENTS.md，外→内）＋ 可用技能索引。
 
-    顺序固定：人格与工具策略 → 项目约定（AGENTS.md，外→内）→ 可用技能索引 → 当前工作区。
-    **稳定内容在前、易变内容在后**（压缩摘要由 `with_summary` 追加在最末），所以同一个
-    工作区里只有"约定或技能真的变了"才会动前缀，其余时候前缀缓存照常命中。
-
-    workspace 为空表示会话没绑工作区，按应用所在目录处理——与沙箱的兜底值一致。
+    这一段由服务 `context`（builtin/context 插件）负责注入——插件卸下就不再注入，
+    属于"功能退化"而不是错误。
     """
     root = Path(workspace) if workspace else PROJECT_ROOT
-    parts = [SYSTEM_PROMPT]
+    parts: list[str] = []
 
     if AGENTS_MD_ENABLED:
         context = render_project_context(load_agents_files(root))
@@ -58,5 +55,21 @@ def build_system_prompt(workspace: str | None = None) -> str:
         if block:
             parts.append(block)
 
-    parts.append(f"\n\n当前工作区：{root.as_posix()}")
     return "".join(parts)
+
+
+def build_system_prompt(workspace: str | None = None, *, static: str | None = None) -> str:
+    """
+    拼出这一轮发给模型的 system 提示词。
+
+    顺序固定：人格与工具策略 → 项目约定（AGENTS.md，外→内）→ 可用技能索引 → 当前工作区。
+    **稳定内容在前、易变内容在后**（压缩摘要由 `with_summary` 追加在最末），所以同一个
+    工作区里只有"约定或技能真的变了"才会动前缀，其余时候前缀缓存照常命中。
+
+    `static` 是静态上下文块：图内由服务 `context` 提供（传进来），图外的调用
+    （如压缩估算）不传，本模块自己渲染。workspace 为空表示会话没绑工作区，
+    按应用所在目录处理——与沙箱的兜底值一致。
+    """
+    root = Path(workspace) if workspace else PROJECT_ROOT
+    block = render_static_context(workspace) if static is None else static
+    return "".join([SYSTEM_PROMPT, block, f"\n\n当前工作区：{root.as_posix()}"])
