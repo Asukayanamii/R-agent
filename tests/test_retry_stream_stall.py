@@ -163,7 +163,7 @@ def check_watchdog_config() -> None:
     os.environ["LLM_BASE_URL"] = "http://127.0.0.1:1/v1"
 
     def load(value: str | None):
-        from app import config as config_module
+        from app.common import config as config_module
         from app.agent import models as models_module
 
         if value is None:

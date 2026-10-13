@@ -11,7 +11,7 @@ from langchain_core.outputs import ChatResult
 from langchain_openai import ChatOpenAI
 
 from app.agent.compaction.policy import summary_max_tokens
-from app.config import (
+from app.common.config import (
     COMPACT_MODEL,
     LLM_API_KEY,
     LLM_BASE_URL,
@@ -19,7 +19,7 @@ from app.config import (
     LLM_MODEL,
     LLM_STREAM_CHUNK_TIMEOUT,
 )
-from app.exceptions import ModelUnavailable
+from app.common.exceptions import ModelUnavailable
 
 NO_MODEL_REASON = (
     "未配置 LLM_API_KEY，无法对话。"

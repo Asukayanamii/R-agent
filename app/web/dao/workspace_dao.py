@@ -3,7 +3,7 @@
 
 工作区从"会话行上的一段字符串"升格成实体后就落在这里：路径怎么归一、怎么判重、
 会话与工作区怎么绑定，都是这一层的读写细节。不含业务规则（时间戳由上层传进来），
-也不 import 上层 DTO——只认 app.models.entities 里的领域实体。
+也不 import 上层 DTO——只认 app.common.models.entities 里的领域实体。
 
 两张表放在同一个 DAO 里：它们只在"建立一次绑定"和"读一次归属"时被一起用，
 拆成两个类只会让同一个动作跨两个对象。
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from app.models.entities import WorkspaceRecord
+from app.common.models.entities import WorkspaceRecord
 
 logger = logging.getLogger(__name__)
 

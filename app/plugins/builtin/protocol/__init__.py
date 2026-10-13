@@ -12,10 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.kernel import Service
-
-from .encoding import SSE_HEADERS, SSE_MEDIA_TYPE, encode_sse, sse_stream
-from .events import (
+from app.harness.events import (
     GraphUpdatedData,
     GraphUpdatedEvent,
     InterruptData,
@@ -27,6 +24,9 @@ from .events import (
     ToolsetUpdatedData,
     ToolsetUpdatedEvent,
 )
+from app.kernel import Service
+
+from .encoding import SSE_HEADERS, SSE_MEDIA_TYPE, encode_sse, sse_stream
 from .mapping import translate_events
 
 PLUGIN_ID = 'builtin/protocol'

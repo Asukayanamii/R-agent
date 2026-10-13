@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import TypeVar,Generic,Optional
 from fastapi.responses import JSONResponse
 
-from app.constant.result_constant import ResultCode
+from app.web.constant.result_constant import ResultCode
 
 T=TypeVar('T')
 

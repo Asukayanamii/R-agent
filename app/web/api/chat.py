@@ -6,9 +6,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.container import get_protocol, get_service
-from app.exceptions import InvalidInput
+from app.common.exceptions import InvalidInput
 from app.plugins.builtin.protocol.encoding import SSE_MEDIA_TYPE
-from app.plugins.builtin.protocol.events import (
+from app.harness.events import (
     BrowseResponse,
     CompactionInfo,
     HistoryResponse,
@@ -17,7 +17,7 @@ from app.plugins.builtin.protocol.events import (
     WorkspaceInfo,
     WorkspaceResponse,
 )
-from app.result.result import Result
+from app.web.result.result import Result
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 

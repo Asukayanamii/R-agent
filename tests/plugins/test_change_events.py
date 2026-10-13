@@ -59,7 +59,11 @@ async def make_runner() -> tuple[LangGraphRunner, Context]:
     await ctx.plugin(protocol_plugin.plugin, essential=True)
     await ctx.plugin(toolbox_plugin.plugin, essential=True)
     runtime = HarnessRuntime(
-        ctx, checkpointer=InMemorySaver(), model=make_model(), summary_model=make_model()
+        ctx,
+        checkpointer=InMemorySaver(),
+        model=make_model(),
+        summary_model=make_model(),
+        base=loop_plugin.plugin,
     )
     await runtime.setup()
     return LangGraphRunner(runtime, ctx.get('protocol')), ctx

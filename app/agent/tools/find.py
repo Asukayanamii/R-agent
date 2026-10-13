@@ -6,7 +6,7 @@ from langchain_core.tools import tool
 
 from app.agent.sandbox import READ, guard_path
 from app.agent.tools.common import fail, rel, walk_files
-from app.exceptions import SandboxDenied
+from app.common.exceptions import SandboxDenied
 
 
 @tool

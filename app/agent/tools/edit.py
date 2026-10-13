@@ -5,7 +5,7 @@ from langchain_core.tools import tool
 from app.agent.sandbox import WRITE, guard_path
 from app.agent.tools.common import fail, rel
 from app.agent.tools.diff import build_diff
-from app.exceptions import SandboxDenied
+from app.common.exceptions import SandboxDenied
 
 
 def fuzzy_span(lines: list[str], wanted: list[str]) -> tuple[int, int] | None:

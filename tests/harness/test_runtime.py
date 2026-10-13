@@ -33,18 +33,24 @@ def make_model() -> BaseChatModel:
 
 
 def make_runtime(ctx: Context | None = None, **kwargs) -> HarnessRuntime:
+    from app.plugins.builtin import loop
+
     return HarnessRuntime(
         ctx or Context(),
         checkpointer=InMemorySaver(),
         model=make_model(),
         summary_model=make_model(),
+        base=loop.plugin,
         **kwargs,
     )
 
 
 async def make_ready_runtime(**kwargs) -> HarnessRuntime:
-    """装载 toolbox（loop 的服务依赖）并完成装配的 runtime。"""
-    from app.plugins.builtin import toolbox
+    """装载 toolbox（loop 的服务依赖）并完成装配的 runtime。
+
+    骨架插件由调用方（这里）交进去——harness 自己不认识任何插件（`tests/test_layout.py` 守着）。
+    """
+    from app.plugins.builtin import loop, toolbox
 
     runtime = make_runtime(**kwargs)
     await runtime.ctx.plugin(toolbox.plugin, essential=True)

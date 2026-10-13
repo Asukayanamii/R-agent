@@ -21,7 +21,7 @@ override 顶掉同目录另外两个，其他目录照常层叠（这是 Pi 的�
 import logging
 from pathlib import Path
 
-from app.config import AGENTS_ANCESTORS, CONFIG_DIR, PROJECT_ROOT
+from app.common.config import AGENTS_ANCESTORS, CONFIG_DIR, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 

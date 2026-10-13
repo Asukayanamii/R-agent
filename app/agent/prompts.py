@@ -15,7 +15,7 @@ from pathlib import Path
 
 from app.agent.agents_md import load_agents_files, render_project_context
 from app.agent.skills import load_skills, render_skills_block
-from app.config import PROJECT_ROOT
+from app.common.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class ContextSettings:
     @classmethod
     def from_app_config(cls) -> 'ContextSettings':
         """引用总体配置（.env）。"""
-        from app import config
+        from app.common import config
 
         return cls(
             skills_enabled=config.SKILLS_ENABLED,

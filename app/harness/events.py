@@ -1,9 +1,16 @@
-"""
-协议层：前端能看到的一切形状。
+"""事件词汇表：图的产出形状（与 `fragment.py` 的 `OUTPUT_SEAMS` 同侧，随**内核版本**走）。
 
 流式部分是 type / data 两个字段的事件：前端不感知 LangGraph 的节点、metadata、run_id
 等内部结构，后端重构 graph 时前端无需改动。非流式部分是各接口的回执，服务层把领域实体
 映射成它们，表现层只负责包一层 `Result`。
+
+**为什么不在协议插件里**：agent / service / api 都要静态构造这些类（节点产出、接口回执），
+放在 `plugins/builtin/protocol/` 就等于"这些层都反向依赖一个插件"。词汇表是内核的产出契约
+（接缝清单见 `fragment.OUTPUT_SEAMS`），协议插件只负责**映射**（`mapping.py`）与**编码**
+（`encoding.py`）；换一份协议实现 = 换 mapping/encoding，事件名是前端契约、不随插件变。
+
+诚实标注：这些类目前**同时**充当内部词汇表与 wire 形状（历史遗留，原本是 `app/event/events.py`）。
+真要换一份协议实现时再把"内部词汇表"与"wire 模型"分成两套——那时才有第二个实现来验证边界。
 
 请求体（`ChatRequest` / `ResumeRequest` / `WorkspaceRequest`）留在 api 层——那是入站的
 HTTP 校验，前端拿不到它，服务层也不该知道。
@@ -137,7 +144,7 @@ class DoneData(BaseModel):
 
 
 # ---- 以下是非流式接口的形状：服务层直接产出，表现层只负责包 Result ----
-# 请求体不在这一层：它是入站的 HTTP 校验，见 app/api/chat.py。
+# 请求体不在这一层：它是入站的 HTTP 校验，见 app/web/api/chat.py。
 
 
 class HistoryToolCall(BaseModel):

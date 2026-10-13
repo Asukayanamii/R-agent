@@ -29,7 +29,7 @@ from pathlib import Path
 
 import yaml
 
-from app.config import CONFIG_DIR, SKILLS_DIR, SKILLS_ENABLED
+from app.common.config import CONFIG_DIR, SKILLS_DIR, SKILLS_ENABLED
 
 logger = logging.getLogger(__name__)
 

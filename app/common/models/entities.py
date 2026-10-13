@@ -4,7 +4,7 @@
 判据只有一条——**要不要跨 HTTP 边界**：
 
 - 只在内部流转、不直接发给前端 → 放这里。dataclass，没有校验与序列化负担
-- 前端能看见的形状（SSE 帧、接口回执）→ 放 `app/event/events.py`。pydantic，供 OpenAPI
+- 前端能看见的形状（SSE 帧、接口回执）→ 放 `app/harness/events.py`。pydantic，供 OpenAPI
 
 所以业务层要把实体**映射**成协议形状（ThreadRecord + WorkspaceRecord → ThreadSummary），
 而不是把实体直接当响应返回。本项目没有 ORM——SQL 是手写的，DAO 读出来的就是这里的数据类；

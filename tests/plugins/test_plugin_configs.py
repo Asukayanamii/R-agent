@@ -43,7 +43,7 @@ def make_summary_model(text: str = '摘要'):
 
 def test_default_config_reads_the_overall_config(monkeypatch):
     """插件的默认配置引用总体配置——所以改 .env 还是"改一处"。"""
-    from app import config
+    from app.common import config
 
     monkeypatch.setattr(config, 'COMPACT_AT', 0.5)
     monkeypatch.setattr(config, 'LLM_CONTEXT_WINDOW', 1234)
@@ -59,7 +59,7 @@ def test_default_config_reads_the_overall_config(monkeypatch):
 
 
 def test_context_default_config_reads_the_overall_config(monkeypatch):
-    from app import config
+    from app.common import config
 
     monkeypatch.setattr(config, 'SKILLS_ENABLED', False)
     monkeypatch.setattr(config, 'SKILLS_DIR', 'X:/skills')

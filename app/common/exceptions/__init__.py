@@ -8,8 +8,8 @@
 错误信息一律**原文呈现**，不做面向用户的翻译：本项目开源、面向程序员，
 `str(exc)` 比一句客套话有用。所以这里也不提供"把异常翻成人话"的函数。
 
-代码直接放在包的 `__init__.py` 里，而不是像 `app/result/result.py` 那样再套一层同名模块——
-套了就成了 `from app.exceptions.exceptions import ...`，双重叠词。异常类只有几个，
+代码直接放在包的 `__init__.py` 里，而不是像 `app/web/result/result.py` 那样再套一层同名模块——
+套了就成了 `from app.common.exceptions.exceptions import ...`，双重叠词。异常类只有几个，
 包本身就是它的模块。
 """
 

@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.runner import AgentRunner, StubRunner
-from app.config import PROJECT_ROOT
-from app.dao.thread_index_dao import ThreadIndexDao
-from app.dao.workspace_dao import WorkspaceDao
+from app.common.config import PROJECT_ROOT
+from app.web.dao.thread_index_dao import ThreadIndexDao
+from app.web.dao.workspace_dao import WorkspaceDao
 from app.kernel import ConsoleExporter, Context, LoggingExporter
 from app.kernel.paths import set_root
-from app.service.chat_service import ChatService
+from app.web.service.chat_service import ChatService
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def _compaction_settings(ctx: Context):
 
 
 async def _build_runner(ctx: Context) -> AgentRunner:
-    from app.config import (
+    from app.common.config import (
         AGENTS_ANCESTORS,
         AGENTS_MD_ENABLED,
         COMPACT_AT,
@@ -134,6 +134,7 @@ async def _build_runner(ctx: Context) -> AgentRunner:
     from app.agent.models import build_model, build_summary_model
     from app.harness.runtime import HarnessRuntime
     from app.harness.versions import VersionRegistry
+    from app.plugins.builtin import loop
 
     if llm_configured():
         logger.info("对话走模型：model=%s base_url=%s", LLM_MODEL, LLM_BASE_URL)
@@ -190,13 +191,14 @@ async def _build_runner(ctx: Context) -> AgentRunner:
         logger.warning("SQLITE_PATH 为空，会话状态仅存于内存，重启即失")
         checkpointer = InMemorySaver()
 
-    # 图不再是"构建"出来的：HarnessRuntime 装载 loop 插件（必需）、
+    # 图不再是"构建"出来的：HarnessRuntime 装载**骨架插件**（由这里交进去）、
     # 合成片段、编译并进版本账本；runner 只是它的门面。
     runtime = HarnessRuntime(
         ctx,
         checkpointer=checkpointer,
         model=build_model(),
         summary_model=build_summary_model(),
+        base=loop.plugin,
         versions=VersionRegistry(keep=GRAPH_VERSIONS_KEEP),
     )
     await runtime.setup()
@@ -206,7 +208,7 @@ async def _build_runner(ctx: Context) -> AgentRunner:
 
 async def _start_discovery(ctx: Context) -> None:
     """两级插件库的发现与信任（§5.1）：全局库装载即信任，工作区库默认关、按文件批准。"""
-    from app.config import (
+    from app.common.config import (
         PLUGINS_DIR,
         PLUGINS_ENABLED,
         PLUGINS_WORKSPACE,
@@ -246,7 +248,7 @@ async def startup() -> None:
     if _context is not None:
         return
 
-    from app.config import SQLITE_PATH
+    from app.common.config import SQLITE_PATH
 
     # 内核锚点钉在项目根：从 PyCharm 之类的入口启动时 cwd 不是项目根
     set_root(PROJECT_ROOT)

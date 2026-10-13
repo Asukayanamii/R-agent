@@ -10,7 +10,7 @@
 from contextvars import ContextVar
 from pathlib import Path
 
-from app.config import PROJECT_ROOT
+from app.common.config import PROJECT_ROOT
 
 current_workspace: ContextVar[Path] = ContextVar(
     "current_workspace", default=PROJECT_ROOT

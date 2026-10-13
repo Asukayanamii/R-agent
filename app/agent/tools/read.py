@@ -10,7 +10,7 @@ from app.agent.tools.common import (
     rel,
     truncate_head,
 )
-from app.exceptions import SandboxDenied
+from app.common.exceptions import SandboxDenied
 
 
 @tool

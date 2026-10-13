@@ -2,7 +2,7 @@
 数据访问层：thread_index 表。
 
 这一层只做表的读写，不含任何业务规则（时间戳怎么取、pending 怎么判定都不在这里），
-也不 import 上层的 DTO——它只认 app.models.entities 里的领域实体。
+也不 import 上层的 DTO——它只认 app.common.models.entities 里的领域实体。
 
 工作区已迁出本表，见 workspace_dao；这里只留了"把历史列迁走再删掉"的两个方法。
 """
@@ -12,7 +12,7 @@ from collections.abc import Sequence
 
 import aiosqlite
 
-from app.models.entities import ThreadRecord
+from app.common.models.entities import ThreadRecord
 
 logger = logging.getLogger(__name__)
 

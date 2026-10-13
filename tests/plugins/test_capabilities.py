@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.harness.runtime import HarnessRuntime
 from app.kernel import Context
+from app.plugins.builtin import loop as loop_plugin
 from app.plugins.builtin import toolbox as toolbox_plugin
 from app.plugins.builtin.protocol.mapping import translate_events
 
@@ -64,6 +65,7 @@ def make_runtime(ctx, script, seen) -> HarnessRuntime:
         checkpointer=InMemorySaver(),
         model=make_recording_model(script, seen),
         summary_model=make_recording_model(script, seen),
+        base=loop_plugin.plugin,
     )
 
 

@@ -39,8 +39,8 @@ from pathlib import Path
 from langgraph.types import interrupt
 
 from app.agent.runtime import current_workspace, workspace_relative
-from app.config import CONFIG_DIR, PROJECT_ROOT, SKILLS_DIR, SKILLS_ENABLED
-from app.exceptions import SandboxDenied
+from app.common.config import CONFIG_DIR, PROJECT_ROOT, SKILLS_DIR, SKILLS_ENABLED
+from app.common.exceptions import SandboxDenied
 
 logger = logging.getLogger(__name__)
 

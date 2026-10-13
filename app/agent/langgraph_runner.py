@@ -29,8 +29,8 @@ from app.agent.messages import (
 )
 from app.agent.nodes import RECURSION_LIMIT
 from app.harness.runtime import HarnessRuntime
-from app.models.entities import ThreadRecord
-from app.plugins.builtin.protocol.events import (
+from app.common.models.entities import ThreadRecord
+from app.harness.events import (
     CompactionInfo,
     ErrorData,
     ErrorEvent,

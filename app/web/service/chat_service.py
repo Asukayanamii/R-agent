@@ -18,12 +18,12 @@ from pydantic import BaseModel
 
 from app.agent.runner import AgentRunner
 from app.agent.skills import find_skill, load_skills, render_skill_invocation
-from app.config import PROJECT_ROOT
-from app.dao.thread_index_dao import ThreadIndexDao
-from app.dao.workspace_dao import WorkspaceDao
-from app.exceptions import InvalidInput
-from app.models.entities import ThreadRecord, WorkspaceRecord
-from app.plugins.builtin.protocol.events import (
+from app.common.config import PROJECT_ROOT
+from app.web.dao.thread_index_dao import ThreadIndexDao
+from app.web.dao.workspace_dao import WorkspaceDao
+from app.common.exceptions import InvalidInput
+from app.common.models.entities import ThreadRecord, WorkspaceRecord
+from app.harness.events import (
     BrowseEntry,
     BrowseResponse,
     CompactionInfo,

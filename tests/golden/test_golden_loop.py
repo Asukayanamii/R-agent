@@ -28,6 +28,7 @@ from app.agent.messages import build_history
 from app.harness.runtime import HarnessRuntime
 from app.kernel import Context
 from app.plugins.builtin import approvals as approvals_plugin
+from app.plugins.builtin import loop as loop_plugin
 from app.plugins.builtin import toolbox as toolbox_plugin
 from app.plugins.builtin.protocol.mapping import translate_events
 
@@ -121,6 +122,7 @@ async def make_composed_graph(script: list, *, saver=None, tools=(), approvals=(
         checkpointer=saver or InMemorySaver(),
         model=make_scripted_model(list(script)),
         summary_model=make_scripted_model(list(script)),
+        base=loop_plugin.plugin,
     )
     await runtime.setup()
     return runtime

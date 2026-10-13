@@ -11,7 +11,7 @@ import pytest
 
 from app.agent import sandbox
 from app.agent.runtime import current_workspace
-from app.exceptions import SandboxDenied
+from app.common.exceptions import SandboxDenied
 
 
 @pytest.fixture(autouse=True)

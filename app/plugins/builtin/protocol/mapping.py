@@ -26,8 +26,7 @@ from app.agent.compaction.policy import TAG as COMPACT_TAG
 from app.agent.compaction.runtime import COMPACT_NODE
 from app.agent.messages import brief, text_of, to_diff, to_interrupt_data
 from app.agent.nodes import log_step_limit
-
-from .events import (
+from app.harness.events import (
     CompactData,
     CompactEvent,
     InterruptEvent,

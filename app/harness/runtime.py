@@ -3,7 +3,7 @@
 装配三件事：
 
 1. 提供依赖服务（阶段 B 给的是裸模型对象；阶段 D 换成 ``builtin/model`` 插件）；
-2. 装载内置插件（``loop`` 是必需插件——校验不过 = 启动失败，不带着半死的内核跑）；
+2. 装载**骨架插件**（`base=` 由装配根传进来）——校验不过 = 启动失败，不带着半死的内核跑；
 3. 收集片段 → 合成 → 进版本账本（对外只暴露"当前图 + 租约"）。
 
 结构变化（贡献/撤销片段）由 ``maybe_recompose()`` 生成新的 pending 版本，
@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from app.kernel import Context
+from app.kernel import Context, CordisError
 
 from app.harness.circuit import FailureLedger
 from app.harness.composer import GraphVersion, StructureService, compose, render_mermaid
@@ -41,12 +41,16 @@ class HarnessRuntime:
         checkpointer: BaseCheckpointSaver,
         model: BaseChatModel,
         summary_model: BaseChatModel,
+        base: Any = None,
         versions: VersionRegistry | None = None,
     ) -> None:
         self.ctx = ctx
         self.checkpointer = checkpointer
         self.model = model
         self.summary_model = summary_model
+        self.base = base
+        """骨架插件（`role="base"` 的那个）。由**装配根**交进来——harness 不认识具体插件，
+        否则"装配层"就反过来依赖了它要装配的东西（分层守卫：`tests/test_layout.py`）。"""
         self.versions = versions or VersionRegistry()
         self.structure = ctx.get('structure') or StructureService(ctx)
         self.failures = FailureLedger()
@@ -63,9 +67,12 @@ class HarnessRuntime:
         if self.ctx.get('summary_model') is None:
             self.ctx.provide('summary_model', self.summary_model)
 
-        from app.plugins.builtin import loop
-
-        self._loop_fiber = self.ctx.plugin(loop.plugin, essential=True)
+        if self.base is None:
+            raise CordisError(
+                '没有骨架插件：装配根必须把 role="base" 的插件经 `base=` 交进来'
+                '（harness 不认识任何具体插件）'
+            )
+        self._loop_fiber = self.ctx.plugin(self.base, essential=True)
         await self._loop_fiber
         self.ctx.registry.ensure_essentials()
         await self.recompose()

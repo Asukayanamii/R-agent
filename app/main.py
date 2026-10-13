@@ -4,12 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat
-from app.config import LOG_LEVEL
+from app.web.api import chat
+from app.common.config import LOG_LEVEL
 from app.container import get_assets, shutdown, startup
-from app.handler import unhandled_exception
+from app.web.handler import unhandled_exception
 from app.harness.assets import ASSETS_STATE_ATTR, assets_router
-from app.result.result import ErrorResult, Result
+from app.web.result.result import ErrorResult, Result
 
 logging.basicConfig(
     # 第三方库的 INFO/DEBUG 是噪音（aiosqlite 连每条 SQL 和参数 blob 都打），统一压到 WARNING；

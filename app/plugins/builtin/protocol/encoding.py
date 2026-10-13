@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
-from .events import DoneData, DoneEvent, ErrorData, ErrorEvent
+from app.harness.events import DoneData, DoneEvent, ErrorData, ErrorEvent
 
 logger = logging.getLogger(__name__)
 

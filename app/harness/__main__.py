@@ -3,6 +3,9 @@
     python -m app.harness > docs/graph.mmd
 
 图来自合成器（与运行时同一套片段），不是手画的，也不再从旧实现导出。
+画图要一份**能装配成功**的片段组合：所以这里把骨架与 toolbox 都装上——
+`loop` 声明了 `inject: ['model', 'summary_model', 'tools']`，缺 `tools` 会 PENDING，
+`ensure_essentials()` 直接报错（真实装配路径见 `app/container.py`）。
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.harness.composer import render_mermaid
 from app.harness.runtime import HarnessRuntime
 from app.kernel import Context
+from app.plugins.builtin import loop, toolbox
 
 
 class _DrawOnlyModel(BaseChatModel):
@@ -58,11 +62,14 @@ def with_comments(mermaid: str) -> str:
 
 
 async def _render() -> str:
+    ctx = Context()
+    await ctx.plugin(toolbox.plugin, essential=True)
     runtime = HarnessRuntime(
-        Context(),
+        ctx,
         checkpointer=InMemorySaver(),
         model=_DrawOnlyModel(),
         summary_model=_DrawOnlyModel(),
+        base=loop.plugin,
     )
     await runtime.setup()
     return render_mermaid(runtime.versions.current.graph)

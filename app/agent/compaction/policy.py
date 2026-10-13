@@ -80,7 +80,7 @@ class CompactionSettings:
     @classmethod
     def from_app_config(cls) -> 'CompactionSettings':
         """引用总体配置（.env）——默认值的来源，保持"改一处"的习惯。"""
-        from app import config
+        from app.common import config
 
         return cls(
             enabled=config.COMPACT_ENABLED,

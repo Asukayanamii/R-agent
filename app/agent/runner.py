@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from app.plugins.builtin.protocol.events import (
+from app.harness.events import (
     CompactionInfo,
     ErrorData,
     ErrorEvent,
@@ -30,7 +30,7 @@ from app.plugins.builtin.protocol.events import (
     ToolStartEvent,
     Usage,
 )
-from app.models.entities import ThreadRecord
+from app.common.models.entities import ThreadRecord
 
 
 class AgentRunner(Protocol):

@@ -17,6 +17,7 @@ from app.harness.circuit import FailureLedger, wrap_node
 from app.harness.fragment import Fragment, NodeSpec
 from app.harness.runtime import HarnessRuntime
 from app.kernel import Context
+from app.plugins.builtin import loop as loop_plugin
 from app.plugins.builtin import toolbox as toolbox_plugin
 from app.plugins.builtin.protocol.mapping import translate_events
 
@@ -68,7 +69,11 @@ async def make_runtime_with_probe(probe_node) -> HarnessRuntime:
     ctx = Context()
     await ctx.plugin(toolbox_plugin.plugin, essential=True)
     runtime = HarnessRuntime(
-        ctx, checkpointer=InMemorySaver(), model=make_model(), summary_model=make_model()
+        ctx,
+        checkpointer=InMemorySaver(),
+        model=make_model(),
+        summary_model=make_model(),
+        base=loop_plugin.plugin,
     )
     await runtime.setup()
 
