@@ -14,7 +14,8 @@ from typing import Any
 
 from app.common.models.entities import GraphVersionRecord
 from app.harness.composer import render_mermaid
-from app.web.dao.graph_version_dao import GraphVersionDao
+
+from .graph_version_dao import GraphVersionDao
 
 
 class GraphVersionService:

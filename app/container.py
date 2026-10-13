@@ -17,8 +17,6 @@ from typing import Any
 
 from app.agent.runner import AgentRunner, StubRunner
 from app.common.config import PROJECT_ROOT
-from app.web.dao.thread_index_dao import ThreadIndexDao
-from app.web.dao.workspace_dao import WorkspaceDao
 from app.kernel import ConsoleExporter, Context, LoggingExporter
 from app.kernel.paths import set_root
 from app.web.service.chat_service import ChatService
@@ -67,6 +65,8 @@ async def _load_plugins(ctx: Context) -> None:
         model,
         protocol,
         retry,
+        sandbox,
+        store,
         toolbox,
         webui,
     )
@@ -74,9 +74,10 @@ async def _load_plugins(ctx: Context) -> None:
     # 界面类接缝（ctx.assets）：界面插件把静态资产挂到这张表上，装卸都不动路由表
     AssetRegistry(ctx)
 
-    # 必需：模型与重试（loop 的模型调用链靠它们；没配 key 时模型插件给占位实现）、
-    # 协议（wire 形状与编码）、工具箱（工具服务，loop 的服务依赖）。
-    # 顺序：model → retry → protocol → toolbox → loop（loop 在 setup 里装载）。
+    # 必需：存储（checkpointer + 索引 + 审计，先上，别的都建在它上面）、模型与重试
+    # （loop 的模型调用链靠它们；没配 key 时模型插件给占位实现）、协议（wire 形状与编码）、
+    # 工具箱（工具服务，loop 的服务依赖）。
+    await ctx.plugin(store.plugin, store.default_config(), essential=True)
     await ctx.plugin(model.plugin, model.default_config(), essential=True)
     await ctx.plugin(retry.plugin, retry.default_config(), essential=True)
     await ctx.plugin(protocol.plugin, essential=True)
@@ -86,7 +87,7 @@ async def _load_plugins(ctx: Context) -> None:
     # 每个插件的配置**由插件自己声明默认值**（`default_config()` 引用总体配置 .env），
     # 装配脚本只负责把 base 交进去——将来"用户在前端改设置"的落点就在这里：
     # base 与用户覆盖 dict 合并后再交给插件（覆盖层还没做，形状先留好）。
-    optional = (compaction, context, approvals, exporters, webui)
+    optional = (compaction, context, approvals, exporters, sandbox, webui)
     for module in optional:
         name = module.PLUGIN_ID
         base = module.default_config() if hasattr(module, 'default_config') else None
@@ -104,13 +105,8 @@ def _compaction_settings(ctx: Context):
     return service.settings if service is not None else CompactionSettings.from_app_config()
 
 
-async def _build_runner(ctx: Context, auditor: Any = None) -> AgentRunner:
-    from app.common.config import (
-        CONFIG_WARNINGS,
-        GRAPH_VERSIONS_KEEP,
-        SQLITE_PATH,
-        STUB_ENABLED,
-    )
+async def _build_runner(ctx: Context) -> AgentRunner:
+    from app.common.config import CONFIG_WARNINGS, GRAPH_VERSIONS_KEEP, STUB_ENABLED
 
     for warning in CONFIG_WARNINGS:
         logger.warning("配置回退：%s", warning)
@@ -124,32 +120,16 @@ async def _build_runner(ctx: Context, auditor: Any = None) -> AgentRunner:
     from app.harness.versions import VersionRegistry
     from app.plugins.builtin import loop
 
-    # 模型 / 压缩 / 技能与约定各自的自述都归它们自己的插件（见 builtin/model、compaction、context）——
+    # 模型 / 存储 / 压缩 / 技能与约定各自的自述都归它们自己的插件（builtin/*）——
     # 装配根只报"装配本身"的事，不然同一件事两处写、改一处忘一处。
-    if SQLITE_PATH:
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-        db_file = Path(SQLITE_PATH)
-        db_file.parent.mkdir(parents=True, exist_ok=True)
-        checkpointer = await _exit_stack.enter_async_context(
-            AsyncSqliteSaver.from_conn_string(str(db_file))
-        )
-        logger.info("会话状态落盘至 %s", db_file.resolve())
-    else:
-        from langgraph.checkpoint.memory import InMemorySaver
-
-        logger.warning("SQLITE_PATH 为空，会话状态仅存于内存，重启即失")
-        checkpointer = InMemorySaver()
-
     # 图不再是"构建"出来的：HarnessRuntime 装载**骨架插件**（由这里交进去）、
     # 合成片段、编译并进版本账本；runner 只是它的门面。
-    # 模型不再由这里建（`builtin/model` 插件提供 model / summary_model 两个服务）。
     runtime = HarnessRuntime(
         ctx,
-        checkpointer=checkpointer,
+        checkpointer=ctx.get('checkpointer'),
         base=loop.plugin,
         versions=VersionRegistry(keep=GRAPH_VERSIONS_KEEP),
-        on_version=auditor.record if auditor is not None else None,
+        on_version=getattr(ctx.get('graph_versions'), 'record', None),
     )
     await runtime.setup()
     return LangGraphRunner(runtime, ctx.get("protocol"), _compaction_settings(ctx))
@@ -192,27 +172,16 @@ async def startup() -> None:
     if _context is not None:
         return
 
-    from app.common.config import SQLITE_PATH
-
+    # 存储（checkpointer / 索引 / 审计）归 builtin/store：这里不再自己建连接与 DAO
     # 内核锚点钉在项目根：从 PyCharm 之类的入口启动时 cwd 不是项目根
     set_root(PROJECT_ROOT)
     ctx = Context()
     _install_kernel_logging(ctx)
 
+    # 插件自己把服务挂上 ctx：存储（checkpointer/索引/审计）、模型与重试、协议、工具箱……
     await _load_plugins(ctx)
 
-    # 图版本审计：只需要 SQLITE_PATH，不依赖插件——但必须赶在 _build_runner 之前建好，
-    # 否则首次合成那一次（reason='启动'）就记不上了。
-    from app.web.dao.graph_version_dao import GraphVersionDao
-    from app.web.service.graph_version_service import GraphVersionService
-
-    versions_dao = GraphVersionDao(SQLITE_PATH)
-    await versions_dao.open()
-    _exit_stack.push_async_callback(versions_dao.close)
-    versions = GraphVersionService(versions_dao)
-    _provide(ctx, "graph_versions", versions)
-
-    runner = await _build_runner(ctx, versions)
+    runner = await _build_runner(ctx)
     _provide(ctx, "runner", runner)
 
     # 插件库在 runner **之后**：骨架（loop）要先在架子上——片段是照着锚点表校验的。
@@ -223,21 +192,10 @@ async def startup() -> None:
         _provide(ctx, "plugins", libraries)
         if runtime is not None:
             runtime.on_scope = libraries.ensure
-    checkpointer = getattr(runner, "checkpointer", None)
-    if checkpointer is not None:
-        _provide(ctx, "checkpointer", checkpointer)
 
-    index = ThreadIndexDao(SQLITE_PATH)
-    await index.open()
-    _exit_stack.push_async_callback(index.close)
-    _provide(ctx, "index", index)
-
-    workspaces = WorkspaceDao(SQLITE_PATH)
-    await workspaces.open()
-    _exit_stack.push_async_callback(workspaces.close)
-    _provide(ctx, "workspaces", workspaces)
-
-    service = ChatService(runner, index, workspaces, ctx.get("protocol"))
+    service = ChatService(
+        runner, ctx.get("index"), ctx.get("workspaces"), ctx.get("protocol")
+    )
     _provide(ctx, "chat", service)
 
     adopted, dropped = await service.adopt_workspaces()

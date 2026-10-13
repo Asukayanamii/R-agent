@@ -10,8 +10,8 @@ from test_runtime import make_runtime
 from app.harness.fragment import Fragment, NodeSpec
 from app.kernel import Context
 from app.plugins.builtin import toolbox as toolbox_plugin
-from app.web.dao.graph_version_dao import GraphVersionDao
-from app.web.service.graph_version_service import GraphVersionService
+from app.plugins.builtin.store.graph_version_dao import GraphVersionDao
+from app.plugins.builtin.store.graph_version_service import GraphVersionService
 
 pytestmark = pytest.mark.anyio
 

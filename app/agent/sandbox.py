@@ -61,6 +61,58 @@ _SECRETS = (".env", "*.pem", "*.key", "*id_rsa*")
 DENY_READ = _SECRETS + (".git", ".git/*", "data", "data/*")
 DENY_WRITE = _SECRETS + (".env.*", ".git", ".git/*", "data", "data/*")
 
+
+@dataclass(frozen=True)
+class SandboxPolicy:
+    """沙箱**策略**（可换的那一半）：禁区名单、受信只读根、工作区外是否询问。
+
+    机制（判定顺序、授权文件与硬阻断、`interrupt` 通道）留在这个模块里，不随策略变；
+    策略由 `builtin/sandbox` 插件装载时安装（`use_policy`）、卸载时还原——
+    **默认值就是改造前的行为**（禁区取自 `.env` 无关的常量，受信根 = `SKILLS_DIR`）。
+    """
+
+    deny_read: tuple[str, ...] = DENY_READ
+    deny_write: tuple[str, ...] = DENY_WRITE
+    trusted_read_roots: tuple[str, ...] = ()
+    ask: bool = True
+    """工作区外是弹卡片询问；`False` = 直接拒绝（收紧类，适合无人值守部署）。"""
+
+    @classmethod
+    def from_mapping(cls, mapping: dict | None) -> 'SandboxPolicy':
+        """把插件配置（已过 schema 校验）归一化成策略对象。"""
+        options = dict(mapping or {})
+        return cls(
+            deny_read=tuple(str(item) for item in options.get('deny_read') or DENY_READ),
+            deny_write=tuple(str(item) for item in options.get('deny_write') or DENY_WRITE),
+            trusted_read_roots=tuple(
+                str(item) for item in options.get('trusted_read_roots') or ()
+            ),
+            ask=bool(options.get('ask', True)),
+        )
+
+
+_policy = SandboxPolicy()
+"""当前策略。默认 = 改造前行为；`builtin/sandbox` 插件在装载时替换它。"""
+
+
+def current_policy() -> SandboxPolicy:
+    return _policy
+
+
+def use_policy(policy: SandboxPolicy) -> SandboxPolicy:
+    """安装一份策略，返回**旧的那份**（调用方据此在卸载时还原）。"""
+    global _policy
+    previous = _policy
+    _policy = policy
+    logger.info(
+        "沙箱策略已更新：禁区 %d/%d 条，受信根 %d 个，工作区外%s",
+        len(policy.deny_read),
+        len(policy.deny_write),
+        len(policy.trusted_read_roots),
+        "询问" if policy.ask else "直接拒绝",
+    )
+    return previous
+
 REFUSE = "拒绝"
 ALLOW_ONCE = "允许（本次运行有效）"
 REMEMBER_WORKSPACE = "记住（仅此工作区）"
@@ -173,7 +225,8 @@ def _denied(path: Path, mode: str) -> bool:
     #   持久化越权路径，比"读"更危险；插件授权清单同理（写它 = 自己批准自己的插件）。
     if path in _auth_files():
         return True
-    patterns = DENY_WRITE if mode == WRITE else DENY_READ
+    policy = current_policy()
+    patterns = policy.deny_write if mode == WRITE else policy.deny_read
     relative = _label(path)
     return any(
         fnmatch(relative, pattern) or fnmatch(path.name, pattern)
@@ -201,18 +254,25 @@ def absolute(raw: str) -> Path:
 
 def _trusted_read_roots() -> tuple[Path, ...]:
     """
-    受信只读根：应用自己配置的、**读**不需要授权的目录。目前只有全局技能库。
+    受信只读根：应用自己配置的、**读**不需要授权的目录——全局技能库（`.env` 的 `SKILLS_DIR`）
+    加上策略里补的那些（例如 `builtin/skillbook` 随包带的教学技能库）。
 
     技能是应用自己的库，不是用户临时授予的权限；模型照索引去读技能正文时每读一个就弹一次
     卡片，等于把技能功能做成不可用。写入仍然要授权，禁区优先级也仍高于它（见
     `guard_path` 的判断顺序）。
     """
-    if not SKILLS_ENABLED or not SKILLS_DIR:
-        return ()
-    try:
-        return (Path(SKILLS_DIR).resolve(),)
-    except OSError:
-        return ()
+    roots: list[Path] = []
+    if SKILLS_ENABLED and SKILLS_DIR:
+        try:
+            roots.append(Path(SKILLS_DIR).resolve())
+        except OSError:
+            pass
+    for raw in current_policy().trusted_read_roots:
+        try:
+            roots.append(Path(raw).expanduser().resolve())
+        except OSError:
+            continue
+    return tuple(dict.fromkeys(roots))
 
 
 def _in_trusted_read_root(path: Path) -> bool:
@@ -247,6 +307,14 @@ def guard_path(raw: str, mode: str) -> Path:
     if _covers(target, mode):
         logger.debug("命中已有授权：%s %s", MODE_TEXT[mode], _label(target))
         return target
+
+    if not current_policy().ask:
+        # 收紧类策略（无人值守部署）：工作区外一律拒绝，不弹卡片
+        logger.warning("沙箱拒绝（策略不询问）：%s %s", MODE_TEXT[mode], _label(target))
+        raise SandboxDenied(
+            f"{_label(target)} 在工作区之外，而当前沙箱策略设置为不询问（ask=false），"
+            f"不允许{MODE_TEXT[mode]}。"
+        )
 
     logger.info(
         "请求授权：%s %s（工作区 %s）",

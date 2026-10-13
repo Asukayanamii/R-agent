@@ -2,11 +2,13 @@
 
 扫描 ``app/**/*.py`` 的 import，按允许矩阵断言：
 
-    kernel / common  什么都不 import（app 内）
+    kernel / common   什么都不 import（app 内）
     harness  → kernel
     agent    → kernel、harness、common
     plugins  → kernel、harness、agent、common
-    web      → 上面全部 + 自己；内部再守一次经典三层（api → service → dao）
+    web      → 上面全部 + 自己；内部再守一次 api → service 单向
+
+（存储那层已经不在这里了：阶段 K2 把它拆成了 `builtin/store` 插件。）
 
 入口与装配根（`main.py` / `desktop.py` / `container.py` / `harness/__main__.py`）豁免——
 它们的职责就是"什么都知道"。例外表只有一条：api 经装配根取服务（服务定位器），写在
@@ -31,8 +33,7 @@ ALLOWED = {
 
 ALLOWED_WEB = {
     'api': ('api', 'service', 'result', 'constant'),
-    'service': ('service', 'dao', 'result', 'constant'),
-    'dao': ('dao', 'constant'),
+    'service': ('service', 'result', 'constant'),
     'handler': ('handler', 'result', 'constant'),
     'result': ('result', 'constant'),
     'constant': ('constant',),

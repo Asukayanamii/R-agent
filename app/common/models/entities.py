@@ -38,7 +38,7 @@ class WorkspaceRecord:
 class GraphVersionRecord:
     """一次图版本切换的审计快照：改前/改后、为什么、长什么样。
 
-    由业务层从 `GraphVersion` + 合成报告组装（见 `app.web.service.graph_version_service`），
+    由业务层从 `GraphVersion` + 合成报告组装（见 `app.plugins.builtin.store`），
     DAO 只负责落表与解回；JSON 化的细节（哪些字段打包成 JSON 列）在 DAO 里。
     """
 

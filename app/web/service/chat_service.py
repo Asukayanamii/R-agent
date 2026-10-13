@@ -19,8 +19,6 @@ from pydantic import BaseModel
 from app.agent.runner import AgentRunner
 from app.agent.skills import find_skill, load_skills, render_skill_invocation
 from app.common.config import PROJECT_ROOT
-from app.web.dao.thread_index_dao import ThreadIndexDao
-from app.web.dao.workspace_dao import WorkspaceDao
 from app.common.exceptions import InvalidInput
 from app.common.models.entities import ThreadRecord, WorkspaceRecord
 from app.harness.events import (
@@ -44,10 +42,11 @@ class ChatService:
     def __init__(
         self,
         runner: AgentRunner,
-        index: ThreadIndexDao,
-        workspaces: WorkspaceDao,
+        index: Any,
+        workspaces: Any,
         protocol: Any,
     ) -> None:
+        """`index` / `workspaces` 是 `builtin/store` 插件提供的服务（鸭子类型：不 import 插件）。"""
         self._runner = runner
         self._index = index
         self._workspaces = workspaces

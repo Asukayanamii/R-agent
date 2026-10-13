@@ -14,17 +14,17 @@
 | 装了什么 | FastAPI + SSE + 调试前端 + 桌面模式，一套配齐 | 保留图的编排与事件协议，应用形态交给插件 |
 | 往哪走 | 好用 | 通用、可插拔 |
 
-**内核提取已落地一部分**（阶段 A–E，外加重排过目录）：插件内核内联在 `app/kernel/`，装配层
-（`app/harness/`：片段契约、合成器、版本、资产路由、节点壳）与十个内置插件（`loop` / `protocol` /
-`toolbox` / `model` / `retry` / `compaction` / `approvals` / `context` / `exporters` / `webui`）都已就位，
-`container.py` 也从手工装配换成了内核 Context；插件发现与信任、热重载也做了（全局库 + 工作区库 +
-按文件批准，作用域按会话工作区分区）。
-**还没做**：`store` / `sandbox` 两个插件、agent 自改图；路线图的另外两件事（System-1 路由、自改进）也没开始。
+**内核提取已落地一部分**（阶段 A–E / J / K）：插件内核内联在 `app/kernel/`，装配层
+（`app/harness/`：片段契约、合成器、版本、资产路由、节点壳）与十二个内置插件（`loop` / `protocol` /
+`toolbox` / `model` / `retry` / `store` / `sandbox` / `compaction` / `approvals` / `context` /
+`exporters` / `webui`）都已就位，`container.py` 也从手工装配换成了内核 Context；插件发现与信任、
+热重载也做了（全局库 + 工作区库 + 按文件批准，作用域按会话工作区分区）。
+**还没做**：agent 自改图；路线图的另外两件事（System-1 路由、自改进）也没开始。
 
 ## 目标形态：LangGraph 的执行图 × Cordis 的装配图
 
 内核 = **LangGraph 图工作流** × **插件思想（参考 [Cordis](https://github.com/cordiverse/cordis)）**。
-设计已部分落地（阶段 A–E + J/K1）：装配层与十个内置插件在代码里，两级插件库的发现、信任与热重载也在
+设计已部分落地（阶段 A–E + J/K）：装配层与十二个内置插件在代码里，两级插件库的发现、信任与热重载也在
 （见"插件库"一节）；**agent 自改图**还没做——下面讲**目标形态与为什么**。
 
 - **图工作流**是骨架：`stamp → [entry] → compact → [pre_model] → agent → [post_model]`，
@@ -84,10 +84,11 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 把「能力」和「装配」拆开：工具、技能、审批、压缩、存储各自成为一个插件，依赖靠声明而不是 import
 具体实现，生命周期跟着容器走（装上即生效、卸下即清理）。现在换一个实现要动装配根，之后只是换一个插件。
 
-**进度（阶段 A–E / J / K1）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
+**进度（阶段 A–E / J / K）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
 （`app/harness/`：锚点插链、动态 schema、两段校验、版本与租约、节点壳与熔断、合成报告）；
-十个内置插件（骨架 `loop`、协议 `protocol`、工具箱 `toolbox`、模型 `model`、重试 `retry`、
-压缩 `compaction`、审批 `approvals`、上下文 `context`、观测 `exporters`、前端 `webui`）；工具集可在**运行时**
+十二个内置插件（骨架 `loop`、协议 `protocol`、工具箱 `toolbox`、模型 `model`、重试 `retry`、
+存储 `store`、沙箱策略 `sandbox`、压缩 `compaction`、审批 `approvals`、上下文 `context`、
+观测 `exporters`、前端 `webui`）；工具集可在**运行时**
 增删（下一次模型调用生效、不需要重建图）；`/ui` 改成表驱动的动态资产路由；容器换成
 Context 装配（必需插件缺了启动即失败）；两级插件库的发现、按文件批准与热重载
 （`app/plugins/discover.py`：`.json` 纯声明片段 / `.py` 可编程插件，内容指纹轮询，回合边界换图）；
@@ -387,7 +388,7 @@ python -m uvicorn app.main:app --reload --port 8000
 - **已经吐出字的调用不重试**：前端没法把已经渲染的半截回答撤回去，重试只会把它再拉一遍，
   看起来像答了两遍。宁可原样报错（要支持得先有"重置本轮文本"的事件）。
 - **SDK 自带的重试关掉了**（`max_retries=0`）：它不记日志、延迟不可控，次数还会和我们这层
-  相乘（3 × 2 次）。重试只有一处，全在 `app/agent/retry.py`。
+  相乘（3 × 2 次）。重试只有一处，全在 `builtin/retry` 插件（服务 `retry.ainvoke`）。
 - 重试耗尽后抛出去的是**最后一次的异常原文**，两个异常出口不变；每次重试都会先写一行
   WARNING（第几次、等多久、原文），所以日志里能看出"这次慢是因为在重试"。
 
@@ -589,14 +590,11 @@ app/
   kernel/     L0 通用插件内核  内联的 Cordis 版内核（零 app 依赖，整体可搬走）
   harness/    L1 装配层       片段契约 → 合成器 → 版本/租约 → 报告/资产/节点壳
   agent/      L2 运行时       节点、模型、提示词、工具、沙箱、压缩
-  plugins/    L3 插件         builtin/ 下十个：loop（骨架）、protocol、toolbox、model、retry、
-                              compaction、approvals、context、exporters、webui（前端资产）+ discover
-  web/        L4 宿主         经典三层 + 宿主小件
-      api/        表现层      HTTP、请求体校验、SSE 外壳
-      service/    业务层      编排 Agent 执行、维护会话索引与工作区
-      dao/        数据访问层  只读写自有表：thread_index / workspace / thread_workspace
-      handler/    异常出口    非流式那半边的兜底（流式的在 builtin/protocol）
-      result/  constant/      宿主侧的响应封套（Result / ResultCode）
+  plugins/    L3 插件         builtin/ 下十二个：loop（骨架）、protocol、toolbox、model、retry、
+                              store、sandbox、compaction、approvals、context、exporters、
+                              webui（前端资产）+ discover
+  web/        L4 宿主         api（表现）+ service（业务）+ handler（异常出口）
+                              + result / constant（宿主侧响应封套）
   common/     共享叶子       config / exceptions / models——谁都能用，它谁也不依赖
   main.py  desktop.py  container.py   进程入口 + 装配根（一条 ctx.plugin(...) 串起全部）
 ```
@@ -604,7 +602,8 @@ app/
 规则不是建议：`tests/test_layout.py` 按下面这张表扫 import，**改错地方会红**。
 
 - **内核侧单向向上**：kernel → harness → agent → plugins；逆向 import = 违规
-- **宿主只向下**：`web/*` 可以 import 内核侧任何层，反向不允许；web 内部 api → service → dao 单向
+- **宿主只向下**：`web/*` 可以 import 内核侧任何层，反向不允许；web 内部 api → service 单向
+  （存储那一层已经在阶段 K2 拆成 `builtin/store` 插件——宿主不再有自己的 DAO）
 - **`common/` 只收叶子**：它不许 import 任何 `app.*`；出现第一个 app 内依赖就说明放错了
 - **入口与装配根豁免**：`main.py` / `desktop.py` / `container.py` / `harness/__main__.py`；
   唯一显式例外是 `web/api` 经 `app.container` 取服务（服务定位器，装配根是唯一的全局句柄）
@@ -631,29 +630,29 @@ app/
 | `tool_calls.py` | 工具执行：人工审批、并行调用、失败与中断收口 |
 | `compaction/` | 上下文压缩（`policy` 纯逻辑 / `runtime` 接进图） |
 | `messages.py` | 消息与历史重建（纯函数，能单独测） |
-| `models.py` | 模型构建（正常 / 摘要 / 没配 key 时的占位） |
-| `retry.py` | 上游调用失败的重试（错误分类 + 退避） |
 | `prompts.py` | 系统提示词：人格 + 工具策略，并按工作区拼上约定与技能索引 |
 | `skills.py` | 技能：发现、解析、渲染（索引常驻 + 正文按需，无检索） |
 | `agents_md.py` | 项目约定（AGENTS.md / CLAUDE.md）的分层发现与注入 |
 | `runner.py` | `AgentRunner` 协议与 `StubRunner` |
 | `sandbox.py` / `runtime.py` / `tools/` | 沙箱、工作区 ContextVar、工具本体（`tools/diff.py` 只负责 edit 的差异数据） |
 
-- `app/container.py` 是**组装根**：一串 `ctx.plugin(...)`（必需项标 `essential=True`）+ 服务注册；
-  选哪个实现、连接何时开关，都属于应用装配
+- `app/container.py` 是**组装根**：一串 `ctx.plugin(...)`（必需项标 `essential=True`）——
+  存储、模型、重试、协议、工具箱各自把自己的服务挂上 ctx；装配根只报"装配本身"的事
+- `app/agent/sandbox.py` 是**沙箱机制**（判定顺序、授权文件、硬阻断）；**策略**（禁区名单、
+  受信只读根、是否询问）在 `builtin/sandbox` 插件里，装载时安装、卸载即回默认
 - `app/web/handler/` 是**全局异常处理**：非流式那半边的兜底出口（流式的在 `builtin/protocol`）
 - `app/harness/events.py` 是**事件词汇表**（图的产出形状，与 `fragment.py` 的接缝表同侧）；
   `plugins/builtin/protocol/` 负责把它**映射 + 编码**成 wire 形状（SSE 帧）。判据只有一条——
   **要不要跨 HTTP 边界**：要 → pydantic（`harness/events.py` + `web/api` 的返回注解）；只在层间流转 →
   放 `app/common/models/`，dataclass 不带校验。业务层把实体映射成列表项与回执，表现层只负责包 `Result`；
-  **dao 不 import 协议**（存储层不该知道协议）。请求体是入站的 HTTP 校验，留在 `web/api` 层
+  **存储层不 import 协议**（在 `builtin/store` 里，不该知道 wire 形状）。请求体是入站的 HTTP 校验，留在 `web/api` 层
 - `app/common/exceptions/` 放自定义异常（`SandboxDenied`、`InvalidInput`）
 - checkpointer **不单独抽 DAO**：那是 LangGraph 自己的存储，不是我们写的 SQL
 
 **一个关注点一个包**（不放散落的同名模块），包按归属分组：内核侧四层、`web/`、`common/`。
 包内的模块名**别和包同名**，否则会出现 `app.common.exceptions.exceptions` 这种双重叠词；
 所以"默认名字必然等于包名"的那几个（`config`、`exceptions`、`handler`）直接把代码写在
-`__init__.py` 里，其余一律具名模块（`web/api/chat.py`、`harness/composer.py`、`web/dao/workspace_dao.py`）。
+`__init__.py` 里，其余一律具名模块（`web/api/chat.py`、`harness/composer.py`、`builtin/store/workspace_dao.py`）。
 
 > `app/common/config/__init__.py` 的 `PROJECT_ROOT` 是**按目录层级数出来的**，挪文件必须同步改。
 > 它算错不会报错，只会让相对路径的配置静默写到别处去，所以那里有启动断言兜底。
@@ -689,7 +688,7 @@ app/
 | 加技能 | `<工作区>/.my_agent/skills/<名字>/SKILL.md`，或全局库 `~/.my_agent/skills`；**不用改代码** |
 | 加项目约定 | 工作区（或任一祖先目录）放 `AGENTS.md`；同目录要覆盖它就用 `AGENTS.override.md` |
 | 加需审批的工具 | 装配时给 `builtin/approvals` 传 `{"required": ["bash"]}`（即时生效） |
-| 换存储 | `app/container.py` 里换 checkpointer |
+| 换存储 | 换一个 `builtin/store` 插件（服务 `checkpointer` / `index` / `workspaces` / `graph_versions`），或改它的 `sqlite_path` 配置 |
 | 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在容器里替换 |
 | 换事件类型 | `app/harness/events.py`（并 bump 协议版本），前端同步加一个 `case`；映射与编码在 `plugins/builtin/protocol/` |
 | 换前端 | `app/plugins/builtin/webui/static/` 可整体替换（或换一份 webui 插件），事件处理逻辑可直接移植到 Next.js |
