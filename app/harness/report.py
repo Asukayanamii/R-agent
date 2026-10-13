@@ -53,6 +53,8 @@ class CompositionReport:
     disabled: tuple[dict[str, Any], ...]
     mounts: tuple[Mount, ...]
     warnings: tuple[str, ...]
+    pending_change: bool = False
+    """碎片集合已经变了、但还没到回合边界：报告里的挂载链是"现状"，不是正在跑的图。"""
     effective_at: str = '能力类变更已即时生效；结构变更随本版本在本轮之后生效'
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,6 +71,7 @@ class CompositionReport:
                 for item in self.mounts
             ],
             'warnings': list(self.warnings),
+            'pending_change': self.pending_change,
             'effective_at': self.effective_at,
         }
 
@@ -98,6 +101,8 @@ class CompositionReport:
                     f'{head}{mount.anchor:<10} ← {"、".join(mount.chain)}（{mount.frequency}）'
                 )
         lines.append(f'生效时机: {self.effective_at}')
+        if self.pending_change:
+            lines.append('待生效: 片段集合已变，挂载链是**现状**；下一个回合边界换图')
         for index, warning in enumerate(self.warnings):
             head = '警告: ' if index == 0 else '      '
             lines.append(f'{head}{warning}')

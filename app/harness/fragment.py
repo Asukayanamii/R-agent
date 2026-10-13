@@ -42,6 +42,7 @@ __all__ = [
     'validate_against_base',
     'validate_node_names',
     'fragment_spec',
+    'fragment_from_dict',
 ]
 
 
@@ -167,6 +168,98 @@ class Fragment:
     output_seams: tuple[str, ...] = ()
     anchors: tuple[str, ...] = ()
     """仅 role="base"：它提供的锚点表（入站锚点 + 触发频率由骨架自己声明）。"""
+
+
+def _names(value: Any, fragment_id: str, node_name: str, field: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise StructureError(
+            'DECL_FIELD', f'{fragment_id} 的节点 {node_name} 的 {field} 必须是字符串数组'
+        )
+    return tuple(value)
+
+
+def fragment_from_dict(payload: Mapping[str, Any], *, source: str = '') -> Fragment:
+    """
+    把**纯数据**（JSON 声明）翻成 Fragment——插件库里的 `.json` 形态（§5.1）。
+
+    数据能表达的只有"位置与形状"：节点必须是**抽象节点**（`interface`，实现由服务解析），
+    内部边写不出来（片段本来就是"节点顺序即执行顺序"的链，§3.1），条件边/角色/出站接缝
+    都写不出来（路由与内核语义是骨架与代码的事）。形状不对就抛 `StructureError`——
+    合成期的两段校验照旧兜底。
+
+    形状::
+
+        {"id": "workspace/research", "anchor": "pre_model", "order": 0,
+         "chain": [{"name": "notes", "interface": "research",
+                    "reads": ["messages"], "writes": ["plugin.workspace/research.notes"]}],
+         "channels": [{"name": "plugin.workspace/research.notes"}]}
+    """
+    where = source or '声明'
+    if not isinstance(payload, Mapping):
+        raise StructureError('DECL_SHAPE', f'{where} 必须是 JSON 对象')
+
+    fragment_id = payload.get('id')
+    if not isinstance(fragment_id, str) or not fragment_id.strip():
+        raise StructureError('DECL_ID', f'{where} 缺少字符串 id')
+
+    anchor = payload.get('anchor')
+    if not isinstance(anchor, str) or not anchor.strip():
+        raise StructureError('DECL_ANCHOR', f'{fragment_id} 缺少 anchor（挂点）')
+
+    order = payload.get('order', 0)
+    if isinstance(order, bool) or not isinstance(order, int):
+        raise StructureError('DECL_ORDER', f'{fragment_id} 的 order 必须是整数')
+
+    chain = payload.get('chain')
+    if not isinstance(chain, list) or not chain:
+        raise StructureError('DECL_CHAIN', f'{fragment_id} 的 chain 必须是非空数组')
+
+    nodes: list[NodeSpec] = []
+    for entry in chain:
+        if not isinstance(entry, Mapping):
+            raise StructureError('DECL_NODE', f'{fragment_id} 的 chain 项必须是对象')
+        node_name = entry.get('name')
+        interface = entry.get('interface')
+        if not isinstance(node_name, str) or not node_name.strip():
+            raise StructureError('DECL_NODE', f'{fragment_id} 的 chain 项缺少字符串 name')
+        if not isinstance(interface, str) or not interface.strip():
+            raise StructureError(
+                'DECL_INTERFACE',
+                f'{fragment_id} 的节点 {node_name} 必须给 interface：'
+                f'纯声明片段不执行代码，实现只能来自服务',
+            )
+        nodes.append(
+            NodeSpec(
+                name=node_name,
+                interface=interface,
+                reads=_names(entry.get('reads'), fragment_id, node_name, 'reads'),
+                writes=_names(entry.get('writes'), fragment_id, node_name, 'writes'),
+            )
+        )
+
+    channels: list[ChannelSpec] = []
+    for entry in payload.get('channels') or ():
+        if not isinstance(entry, Mapping):
+            raise StructureError('DECL_CHANNEL', f'{fragment_id} 的 channels 项必须是对象')
+        channel_name = entry.get('name')
+        if not isinstance(channel_name, str) or not channel_name.strip():
+            raise StructureError('DECL_CHANNEL', f'{fragment_id} 的通道缺少字符串 name')
+        if 'reducer' in entry:
+            raise StructureError(
+                'DECL_REDUCER',
+                f'{fragment_id} 的通道 {channel_name} 声明了 reducer：合并语义是代码，写不进数据',
+            )
+        channels.append(ChannelSpec(name=channel_name, default=entry.get('default')))
+
+    return Fragment(
+        id=fragment_id,
+        anchor=anchor,
+        order=order,
+        nodes=tuple(nodes),
+        channels=tuple(channels),
+    )
 
 
 def _channel_owner_ok(fragment: Fragment, name: str, *, what: str) -> None:

@@ -99,9 +99,18 @@ def _workspace_file() -> Path:
     return _workspace() / CONFIG_DIR / CONFIG_FILE
 
 
-def _auth_files() -> tuple[Path, Path]:
-    """授权文件的绝对路径（全局 + 当前工作区），供 `_denied` 做硬阻断的精确命中。"""
-    return _definition_file().resolve(), _workspace_file().resolve()
+def _trust_file() -> Path:
+    """工作区插件授权清单（§5.1 / 与 `app/plugins/discover.py` 的 TRUST_FILE 同一份约定）。"""
+    return _workspace() / CONFIG_DIR / "plugins.json"
+
+
+def _auth_files() -> tuple[Path, ...]:
+    """授权文件的绝对路径（全局 + 当前工作区的沙箱授权 + 插件授权），供 `_denied` 精确命中。"""
+    return (
+        _definition_file().resolve(),
+        _workspace_file().resolve(),
+        _trust_file().resolve(),
+    )
 
 
 def _load(path: Path) -> _Grant:
@@ -161,8 +170,7 @@ def _denied(path: Path, mode: str) -> bool:
     # 授权文件是"禁区中的禁区"，按绝对路径精确命中，不走名字模式：
     # - 读：边界必须对 agent 不透明——它能读到自己的授权文件，就会学着去探测/绕过；
     # - 写：写进去**当场不生效**（内存缓存优先），重启后却被采纳——一条真实的
-    #   持久化越权路径，比"读"更危险。
-    # 全局文件与当前工作区的文件都在列；阶段 E 的插件授权文件沿用同一位置、同一条检查。
+    #   持久化越权路径，比"读"更危险；插件授权清单同理（写它 = 自己批准自己的插件）。
     if path in _auth_files():
         return True
     patterns = DENY_WRITE if mode == WRITE else DENY_READ

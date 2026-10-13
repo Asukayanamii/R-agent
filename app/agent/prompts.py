@@ -10,11 +10,12 @@
 """
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.agent.agents_md import load_agents_files, render_project_context
 from app.agent.skills import load_skills, render_skills_block
-from app.config import AGENTS_MD_ENABLED, PROJECT_ROOT, SKILLS_ENABLED
+from app.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -35,23 +36,63 @@ SYSTEM_PROMPT = (
 )
 
 
-def render_static_context(workspace: str | None = None) -> str:
+@dataclass(frozen=True)
+class ContextSettings:
+    """静态上下文注入的全部旋钮（由 `builtin/context` 插件的配置提供）。
+
+    默认值 = 改造前行为；`from_app_config()` 引用总体配置（`.env`）——
+    所以"改一处"的习惯（改 .env）照旧，而配置的**所有权**在插件手里。
+    """
+
+    skills_enabled: bool = True
+    skills_dir: str = ''
+    agents_md_enabled: bool = True
+    ancestors: bool = True
+
+    @classmethod
+    def from_mapping(cls, mapping: dict | None) -> 'ContextSettings':
+        """把插件配置（已过 schema 校验）归一化成设置对象。"""
+        options = dict(mapping or {})
+        return cls(
+            skills_enabled=bool(options.get('skills_enabled', True)),
+            skills_dir=str(options.get('skills_dir') or ''),
+            agents_md_enabled=bool(options.get('agents_md_enabled', True)),
+            ancestors=bool(options.get('ancestors', True)),
+        )
+
+    @classmethod
+    def from_app_config(cls) -> 'ContextSettings':
+        """引用总体配置（.env）。"""
+        from app import config
+
+        return cls(
+            skills_enabled=config.SKILLS_ENABLED,
+            skills_dir=config.SKILLS_DIR,
+            agents_md_enabled=config.AGENTS_MD_ENABLED,
+            ancestors=config.AGENTS_ANCESTORS,
+        )
+
+
+def render_static_context(
+    workspace: str | None = None, settings: ContextSettings | None = None
+) -> str:
     """
     静态上下文块：项目约定（AGENTS.md，外→内）＋ 可用技能索引。
 
     这一段由服务 `context`（builtin/context 插件）负责注入——插件卸下就不再注入，
-    属于"功能退化"而不是错误。
+    属于"功能退化"而不是错误。`settings` 不传则引用总体配置。
     """
+    settings = settings or ContextSettings.from_app_config()
     root = Path(workspace) if workspace else PROJECT_ROOT
     parts: list[str] = []
 
-    if AGENTS_MD_ENABLED:
-        context = render_project_context(load_agents_files(root))
+    if settings.agents_md_enabled:
+        context = render_project_context(load_agents_files(root, ancestors=settings.ancestors))
         if context:
             parts.append(context)
 
-    if SKILLS_ENABLED:
-        block = render_skills_block(load_skills(root))
+    if settings.skills_enabled:
+        block = render_skills_block(load_skills(root, global_dir=settings.skills_dir))
         if block:
             parts.append(block)
 

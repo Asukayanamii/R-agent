@@ -55,6 +55,18 @@ def test_global_auth_file_is_hard_blocked(workspace, mode, prompts):
     assert prompts == []
 
 
+@pytest.mark.parametrize('mode', [sandbox.READ, sandbox.WRITE])
+def test_plugin_trust_file_is_hard_blocked(workspace, mode, prompts):
+    """插件授权清单同一条检查：agent 不能读它、更不能自己给自己批准插件（阶段 E）。"""
+    target = workspace / sandbox.CONFIG_DIR / 'plugins.json'
+
+    with pytest.raises(SandboxDenied) as info:
+        sandbox.guard_path(str(target), mode)
+
+    assert '受保护路径' in str(info.value)
+    assert prompts == []
+
+
 def test_same_named_file_elsewhere_is_not_hard_blocked(workspace):
     """同名文件不误伤：工作区里别处的 sandbox.json 是普通文件，照常放行。"""
     target = workspace / 'notes' / 'sandbox.json'

@@ -53,8 +53,11 @@ def log_step_limit(thread_id: str, exc: Exception) -> None:
     )
 
 
-def make_compact_node(summary_model: BaseChatModel):
-    """构造压缩检查节点：超水位就把中段摘要掉；不超（或压不动）就原样放行，返回空更新。"""
+def make_compact_node(summary_model: BaseChatModel, settings: Any = None):
+    """构造压缩检查节点：超水位就把中段摘要掉；不超（或压不动）就原样放行，返回空更新。
+
+    `settings` 由 `builtin/compaction` 插件的配置提供（不传则引用总体配置）。
+    """
 
     async def compact_context(state: dict) -> dict:
         config = get_config()
@@ -63,6 +66,7 @@ def make_compact_node(summary_model: BaseChatModel):
             state,
             summary_model=summary_model,
             thread_id=thread_id,
+            settings=settings,
             config=config,
         )
 

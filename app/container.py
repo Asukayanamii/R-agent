@@ -58,7 +58,6 @@ async def _load_plugins(ctx: Context) -> None:
     顺序有意义：协议先上（`webui` 依赖 `protocol:v1`）；工具箱/压缩/上下文都在 `loop`
     之前——`loop` 在装载时就按服务组装骨架（可选服务缺了就退化）。
     """
-    from app.config import COMPACT_ENABLED
     from app.harness.assets import AssetRegistry
     from app.plugins.builtin import (
         approvals,
@@ -77,23 +76,26 @@ async def _load_plugins(ctx: Context) -> None:
     await ctx.plugin(protocol.plugin, essential=True)
     await ctx.plugin(toolbox.plugin, essential=True)
 
-    # 可选：装载失败只降级（点名但不带崩内核）
-    optional = [
-        ('builtin/compaction', compaction, None),
-        ('builtin/context', context, None),
-        ('builtin/approvals', approvals, None),
-        ('builtin/exporters', exporters, None),
-        ('builtin/webui', webui, None),
-    ]
-    if not COMPACT_ENABLED:
-        optional = [item for item in optional if item[0] != 'builtin/compaction']
-        logger.info('上下文压缩已关闭（COMPACT_ENABLED=0）：不装载压缩插件，compact 节点为透传')
-
-    for name, module, config in optional:
+    # 可选：装载失败只降级（点名但不带崩内核）。
+    # 每个插件的配置**由插件自己声明默认值**（`default_config()` 引用总体配置 .env），
+    # 装配脚本只负责把 base 交进去——将来"用户在前端改设置"的落点就在这里：
+    # base 与用户覆盖 dict 合并后再交给插件（覆盖层还没做，形状先留好）。
+    optional = (compaction, context, approvals, exporters, webui)
+    for module in optional:
+        name = module.PLUGIN_ID
+        base = module.default_config() if hasattr(module, 'default_config') else None
         try:
-            await ctx.plugin(module.plugin, config)
+            await ctx.plugin(module.plugin, base)
         except Exception as error:  # noqa: BLE001 - 可选插件的任何装载失败都只降级
             logger.warning('可选插件 %s 未装载：%s', name, error)
+
+
+def _compaction_settings(ctx: Context):
+    """压缩设置：优先取插件（用户可能覆盖过它的配置），插件不在就引用总体配置。"""
+    from app.agent.compaction.policy import CompactionSettings
+
+    service = ctx.get('compaction')
+    return service.settings if service is not None else CompactionSettings.from_app_config()
 
 
 async def _build_runner(ctx: Context) -> AgentRunner:
@@ -106,6 +108,7 @@ async def _build_runner(ctx: Context) -> AgentRunner:
         COMPACT_MODEL,
         CONFIG_WARNINGS,
         CONTEXT_WINDOW_SOURCE,
+        GRAPH_VERSIONS_KEEP,
         LLM_BASE_URL,
         LLM_CONTEXT_WINDOW,
         LLM_MODEL,
@@ -130,6 +133,7 @@ async def _build_runner(ctx: Context) -> AgentRunner:
     from app.agent.langgraph_runner import LangGraphRunner
     from app.agent.models import build_model, build_summary_model
     from app.harness.runtime import HarnessRuntime
+    from app.harness.versions import VersionRegistry
 
     if llm_configured():
         logger.info("对话走模型：model=%s base_url=%s", LLM_MODEL, LLM_BASE_URL)
@@ -147,7 +151,10 @@ async def _build_runner(ctx: Context) -> AgentRunner:
             COMPACT_MODEL or f"跟随主模型（{LLM_MODEL}）",
         )
     else:
-        logger.info("上下文压缩已关闭（COMPACT_ENABLED=0）")
+        logger.info(
+            "自动压缩已关闭（COMPACT_ENABLED=0）：压缩插件以 enabled=false 装载，"
+            "compact 节点照常存在（手动 /chat/compact 仍可用）"
+        )
 
     # 技能与项目约定：把"从哪儿找"写进日志——不生效时第一个要看的就这几行
     if SKILLS_ENABLED:
@@ -190,9 +197,42 @@ async def _build_runner(ctx: Context) -> AgentRunner:
         checkpointer=checkpointer,
         model=build_model(),
         summary_model=build_summary_model(),
+        versions=VersionRegistry(keep=GRAPH_VERSIONS_KEEP),
     )
     await runtime.setup()
-    return LangGraphRunner(runtime, ctx.get("protocol"))
+    await _start_discovery(ctx)
+    return LangGraphRunner(runtime, ctx.get("protocol"), _compaction_settings(ctx))
+
+
+async def _start_discovery(ctx: Context) -> None:
+    """两级插件库的发现与信任（§5.1）：全局库装载即信任，工作区库默认关、按文件批准。"""
+    from app.config import (
+        PLUGINS_DIR,
+        PLUGINS_ENABLED,
+        PLUGINS_WORKSPACE,
+        PLUGIN_WATCH,
+    )
+    from app.plugins.discover import PluginDiscovery
+
+    if not PLUGINS_ENABLED:
+        logger.info("插件发现已关闭（PLUGINS_ENABLED=0）：只有内置插件参与装配")
+        return
+
+    discovery = PluginDiscovery(
+        ctx,
+        global_dir=PLUGINS_DIR,
+        workspace=PLUGINS_WORKSPACE or None,
+        watch=PLUGIN_WATCH,
+    )
+    report = await discovery.start()
+    logger.info(
+        "插件发现：全局库 %s；工作区库 %s（%s）；热重载 %s——%s",
+        PLUGINS_DIR or "（未配置）",
+        PLUGINS_WORKSPACE or "未启用（默认关）",
+        f"授权清单 {PLUGINS_WORKSPACE}/.my_agent/plugins.json" if PLUGINS_WORKSPACE else "不扫",
+        "开（内容指纹轮询，回合边界生效）" if PLUGIN_WATCH else "关（只扫启动那一次）",
+        report.render(),
+    )
 
 
 async def startup() -> None:

@@ -162,6 +162,8 @@ class HarnessRuntime:
             ),
             mounts=tuple(mounts),
             warnings=tuple(version.warnings) if version else (),
+            # 片段集合变了但还没合成/还没到回合边界：报告不能拿"现状"冒充"正在跑的图"
+            pending_change=self._composed_revision != self.structure.revision,
         )
 
     def _pending_plugins(self) -> list[dict[str, Any]]:

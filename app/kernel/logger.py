@@ -58,6 +58,7 @@ _FORMATTERS: dict[str, Callable[[Any], str]] = {
 
 
 def _format_args(args: tuple) -> str:
+    """按 % 占位符格式化（只认 %s/%d/%i/%f/%o/%j 与 %%；**不支持宽度与精度**，如 %.2f）。"""
     if not args:
         return ''
     args = list(args)

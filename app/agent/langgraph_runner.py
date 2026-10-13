@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel
 
+from app.agent.compaction.policy import CompactionSettings
 from app.agent.compaction.runtime import COMPACT_NODE, compact_once
 from app.agent.messages import (
     INTERRUPTED_MESSAGE,
@@ -49,12 +50,17 @@ class LangGraphRunner:
     由装配根注进来；它只负责把翻译流原样递出去。
     """
 
-    def __init__(self, runtime: HarnessRuntime, protocol: Any) -> None:
+    def __init__(
+        self, runtime: HarnessRuntime, protocol: Any, compaction_settings: Any = None
+    ) -> None:
         self.runtime = runtime
         self.protocol = protocol
         self.checkpointer = runtime.checkpointer
         # 摘要模型也留着：用户主动压缩（compact）走的是图外那条路，得能拿到它
         self.summary_model = runtime.summary_model
+        # 压缩的全部旋钮（由 builtin/compaction 插件的配置提供；不传则引用总体配置）——
+        # 手动 /chat/compact 与图内的 compact 节点用同一份设置，口径才不会分叉。
+        self.compaction_settings = compaction_settings or CompactionSettings.from_app_config()
 
     @staticmethod
     def _config(thread_id: str, workspace: str | None = None) -> dict:
@@ -157,6 +163,7 @@ class LangGraphRunner:
                 snapshot.values,
                 summary_model=self.summary_model,
                 thread_id=thread_id,
+                settings=self.compaction_settings,
                 force=True,
             )
             if not update:

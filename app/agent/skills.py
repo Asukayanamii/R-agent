@@ -269,13 +269,17 @@ def _entries(directory: Path) -> list[os.DirEntry]:
     ]
 
 
-def _roots(workspace: Path | None) -> list[tuple[Path, str]]:
-    """按优先级给出 (技能根, 作用域)。靠前的同名技能获胜。"""
+def _roots(workspace: Path | None, *, global_dir: str | None = None) -> list[tuple[Path, str]]:
+    """按优先级给出 (技能根, 作用域)。靠前的同名技能获胜。
+
+    `global_dir=None` 表示引用总体配置（`SKILLS_DIR`）。
+    """
     roots: list[tuple[Path, str]] = []
     if workspace is not None:
         roots.append((Path(workspace) / CONFIG_DIR / SKILLS_SUBDIR, "项目"))
-    if SKILLS_DIR:
-        roots.append((Path(SKILLS_DIR), "全局"))
+    resolved = SKILLS_DIR if global_dir is None else global_dir
+    if resolved:
+        roots.append((Path(resolved), "全局"))
     return roots
 
 
@@ -296,19 +300,26 @@ def _log_index(key: str, skills: list[Skill]) -> None:
     logger.info("技能索引（%s）：%s", key, names or "无")
 
 
-def load_skills(workspace: str | Path | None) -> list[Skill]:
+def load_skills(
+    workspace: str | Path | None, *, global_dir: str | None = None, enabled: bool | None = None
+) -> list[Skill]:
     """
     加载该工作区可用的技能，按名字排序（顺序固定，提示词前缀才不会无谓地变）。
 
     同名冲突保留先扫到的那个（工作区优先于全局），并把两边路径都写进日志——
     "为什么改了这个技能没生效"必须能在日志里找到答案。
+
+    `enabled` / `global_dir` 为 None 表示引用总体配置；图内由 `builtin/context`
+    插件的配置显式传入。
     """
-    if not SKILLS_ENABLED:
+    if enabled is None:
+        enabled = SKILLS_ENABLED
+    if not enabled:
         return []
 
     root = Path(workspace) if workspace else None
     by_name: dict[str, Skill] = {}
-    for directory, scope in _roots(root):
+    for directory, scope in _roots(root, global_dir=global_dir):
         for skill in _scan_root(directory, scope):
             existing = by_name.get(skill.name)
             if existing is not None:

@@ -146,6 +146,25 @@ AGENTS_MD_ENABLED = os.getenv("AGENTS_MD_ENABLED", "1").strip() != "0"
 # 是否向上遍历祖先目录找约定文件（到含 .git 的目录为止）。关掉就只读全局与工作区根。
 AGENTS_ANCESTORS = os.getenv("AGENTS_ANCESTORS", "1").strip() != "0"
 
+# ---- 插件（阶段 E） ----
+# 插件发现的总开关。关掉 = 只装配内置插件，两级插件库都不扫。
+PLUGINS_ENABLED = os.getenv("PLUGINS_ENABLED", "1").strip() != "0"
+
+# 全局插件库：`.py`（可编程）/ `.json`（纯片段声明）；**装载即信任**。
+PLUGINS_DIR = _resolve(os.getenv("PLUGINS_DIR", "~/.my_agent/plugins"))
+
+# 工作区插件库：**默认为空 = 默认关**（§5.1）。填了路径才扫它的
+# `<该工作区>/.my_agent/plugins/`，且每个文件都要在工作区授权清单
+# （`<该工作区>/.my_agent/plugins.json` 的 trusted）里才装载——"首次需审批、按工作区持久化"。
+PLUGINS_WORKSPACE = _resolve(os.getenv("PLUGINS_WORKSPACE", ""))
+
+# 内容指纹轮询热重载（Windows 上不依赖 inotify；比 mtime 稳，绕开"同秒等长"）。
+# 置 0 关掉：插件只在启动时扫一次。
+PLUGIN_WATCH = os.getenv("PLUGIN_WATCH", "1").strip() != "0"
+
+# 图版本账本保留几个历史版本（LRU）；无在飞租约、未超此数的旧版本可回收。
+GRAPH_VERSIONS_KEEP = _int_or(os.getenv("GRAPH_VERSIONS_KEEP", "").strip(), 4)
+
 
 def llm_configured() -> bool:
     """没配 key 时对话接口直接说明情况；列表、浏览、删除这些不依赖模型的接口照常可用。"""
