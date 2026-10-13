@@ -3,6 +3,11 @@
 
 "有 key 走 LangGraph、没 key 直接报错、显式开了开关才用桩"以及连接何时开关，都是应用装配
 的事情，不属于表现层、业务层或数据访问层中的任何一层，因此单独放在这里。
+
+装配走内核的 ``Context``：每个组件按"模块 → 服务名"注册（``runner`` / ``checkpointer`` /
+``index`` / ``workspaces`` / ``chat``），对外接口不变——上层仍然只认 ``get_service()``
+与 ``AgentRunner``。阶段 B 起，这些直连会逐步换成 ``ctx.plugin(...)`` 的内置插件；
+内核的路径锚点（``paths.set_root``）也在这里钉到项目根。
 """
 
 import logging
@@ -10,14 +15,40 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 
 from app.agent.runner import AgentRunner, StubRunner
+from app.config import PROJECT_ROOT
 from app.dao.thread_index_dao import ThreadIndexDao
 from app.dao.workspace_dao import WorkspaceDao
+from app.kernel import ConsoleExporter, Context, LoggingExporter
+from app.kernel.paths import set_root
 from app.service.chat_service import ChatService
 
 logger = logging.getLogger(__name__)
 
+KERNEL_LOGGER = "app.kernel"
+"""内核日志的 logger 名：挂在 app.* 之下，级别与格式跟着 LOG_LEVEL 与根配置走。"""
+
 _exit_stack = AsyncExitStack()
-_service: ChatService | None = None
+_context: Context | None = None
+_service_handles: list = []
+_service_names: list[str] = []
+
+
+def _install_kernel_logging(ctx: Context) -> None:
+    """把内核自带的控制台出口换成标准 logging。
+
+    内核默认往 stderr 打带 ANSI 颜色的行；内联进本应用后要统一到 app.* 的日志配置：
+    级别由 LOG_LEVEL 决定（内核那层不设阈值），名字落在 ``app.kernel`` 下。
+    """
+    for exporter in list(ctx.logger.exporters):
+        if isinstance(exporter, ConsoleExporter):
+            ctx.logger.exporters.delete(exporter)
+    ctx.logger.exporter(LoggingExporter(KERNEL_LOGGER))
+
+
+def _provide(ctx: Context, name: str, value: object) -> None:
+    """注册一个服务并留住撤销句柄：有装上就要有卸下（与插件的 effect 语义一致）。"""
+    _service_handles.append(ctx.provide(name, value))
+    _service_names.append(name)
 
 
 async def _build_runner() -> AgentRunner:
@@ -115,23 +146,35 @@ async def startup() -> None:
     顺序有意义：先把历史工作区迁进工作区表（要读 thread_index 上的旧列），
     再回填索引，最后清理旧版留下的空会话行。
     """
-    global _service
-    if _service is not None:
+    global _context
+    if _context is not None:
         return
 
     from app.config import SQLITE_PATH
 
+    # 内核锚点钉在项目根：从 PyCharm 之类的入口启动时 cwd 不是项目根
+    set_root(PROJECT_ROOT)
+    ctx = Context()
+    _install_kernel_logging(ctx)
+
     runner = await _build_runner()
+    _provide(ctx, "runner", runner)
+    checkpointer = getattr(runner, "checkpointer", None)
+    if checkpointer is not None:
+        _provide(ctx, "checkpointer", checkpointer)
 
     index = ThreadIndexDao(SQLITE_PATH)
     await index.open()
     _exit_stack.push_async_callback(index.close)
+    _provide(ctx, "index", index)
 
     workspaces = WorkspaceDao(SQLITE_PATH)
     await workspaces.open()
     _exit_stack.push_async_callback(workspaces.close)
+    _provide(ctx, "workspaces", workspaces)
 
     service = ChatService(runner, index, workspaces)
+    _provide(ctx, "chat", service)
 
     adopted, dropped = await service.adopt_workspaces()
     if adopted:
@@ -151,17 +194,22 @@ async def startup() -> None:
     if rebound:
         logger.info("已把 %d 个没有归属的会话绑到应用所在目录", rebound)
 
-    _service = service
+    _context = ctx
+    ctx.logger("container").info("内核就绪：服务 %s", "、".join(_service_names))
 
 
 async def shutdown() -> None:
-    global _service
+    global _context
+    for handle in reversed(_service_handles):
+        handle()
+    _service_handles.clear()
+    _service_names.clear()
+    _context = None
     await _exit_stack.aclose()
-    _service = None
     logger.debug("服务已关闭，连接已释放")
 
 
 def get_service() -> ChatService:
-    if _service is None:
+    if _context is None:
         raise RuntimeError("服务尚未初始化，请确认应用已走 lifespan 启动")
-    return _service
+    return _context.get("chat")
