@@ -1,9 +1,11 @@
 """
 Agent 执行器（LangGraph 实现）。
 
-**这个文件只是门面**：把 `AgentRunner` 协议的每个方法接到具体模块上——图与节点在 `graph`、
-事件翻译在 `stream`、历史重建在 `messages`、模型在 `models`、压缩在 `compaction/`、
-工具执行在 `tool_calls`。这里不写业务逻辑，只负责串起来。
+**这个文件只是门面**：把 `AgentRunner` 协议的每个方法接到具体模块上——事件翻译在 `stream`、
+历史重建在 `messages`、压缩在 `compaction/`、工具执行在 `tool_calls`。
+
+图不归它所有：结构由 `HarnessRuntime` 从片段合成、按版本管理；每个入口先取一份**租约**
+（回合边界：应用 pending 版本），进行中的回合钉在它开始时的那版图上。
 
 上层路由与前端不感知 LangGraph 的存在。
 """
@@ -11,14 +13,11 @@ Agent 执行器（LangGraph 实现）。
 import logging
 from collections.abc import AsyncIterator
 
-from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 from pydantic import BaseModel
 
 from app.agent.compaction.runtime import COMPACT_NODE, compact_once
-from app.agent.graph import RECURSION_LIMIT, build_graph
 from app.agent.messages import (
     INTERRUPTED_MESSAGE,
     build_history,
@@ -26,7 +25,7 @@ from app.agent.messages import (
     to_interrupt_data,
     unanswered_calls,
 )
-from app.agent.models import build_summary_model
+from app.agent.nodes import RECURSION_LIMIT
 from app.agent.stream import translate_events
 from app.event.events import (
     CompactionInfo,
@@ -35,6 +34,7 @@ from app.event.events import (
     HistoryView,
     InterruptData,
 )
+from app.harness.runtime import HarnessRuntime
 from app.models.entities import ThreadRecord
 
 logger = logging.getLogger(__name__)
@@ -43,16 +43,11 @@ logger = logging.getLogger(__name__)
 class LangGraphRunner:
     """把 LangGraph 事件流翻译成统一事件协议。"""
 
-    def __init__(
-        self,
-        checkpointer: BaseCheckpointSaver,
-        model: BaseChatModel | None = None,
-        summary_model: BaseChatModel | None = None,
-    ) -> None:
-        self.checkpointer = checkpointer
+    def __init__(self, runtime: HarnessRuntime) -> None:
+        self.runtime = runtime
+        self.checkpointer = runtime.checkpointer
         # 摘要模型也留着：用户主动压缩（compact）走的是图外那条路，得能拿到它
-        self.summary_model = summary_model or build_summary_model()
-        self.graph = build_graph(checkpointer, model, self.summary_model)
+        self.summary_model = runtime.summary_model
 
     @staticmethod
     def _config(thread_id: str, workspace: str | None = None) -> dict:
@@ -60,38 +55,54 @@ class LangGraphRunner:
         if workspace:
             configurable["workspace"] = workspace
         # 图的 superstep 上限：LangGraph 默认 25 步，而一个工具回合要花 3 步
-        # （tools → compact → agent），默认值只够 7 个回合。取值理由见 graph.RECURSION_LIMIT。
+        # （tools → compact → agent），默认值只够 7 个回合。取值理由见 nodes.RECURSION_LIMIT。
         return {"configurable": configurable, "recursion_limit": RECURSION_LIMIT}
 
     async def stream(
         self, thread_id: str, message: str, workspace: str | None = None
     ) -> AsyncIterator[BaseModel]:
         inputs = {"messages": [HumanMessage(content=message)]}
-        async for event in translate_events(
-            self.graph,
-            thread_id=thread_id,
-            config=self._config(thread_id, workspace),
-            inputs=inputs,
-        ):
-            yield event
+        async with self.runtime.lease(thread_id) as version:
+            async for event in translate_events(
+                version.graph,
+                thread_id=thread_id,
+                config=self._config(thread_id, workspace),
+                inputs=inputs,
+            ):
+                yield event
 
     async def resume(
         self, thread_id: str, value: str, workspace: str | None = None
     ) -> AsyncIterator[BaseModel]:
         config = self._config(thread_id, workspace)
-        snapshot = await self.graph.aget_state(config)
-        if not snapshot.interrupts:
-            yield ErrorEvent(
-                data=ErrorData(message="该会话没有待确认的操作，无需 resume")
-            )
-            return
-        async for event in translate_events(
-            self.graph,
-            thread_id=thread_id,
-            config=config,
-            inputs=Command(resume=value),
-        ):
-            yield event
+        async with self.runtime.lease(thread_id) as version:
+            snapshot = await version.graph.aget_state(config)
+            if not snapshot.interrupts:
+                yield ErrorEvent(
+                    data=ErrorData(message="该会话没有待确认的操作，无需 resume")
+                )
+                return
+            # 兼容判定：待确认中断所在节点必须在当前版本里。结构换过以后，把一个已经
+            # 不在图里的位置接着跑只会得到含糊的报错——这里停下来把话说明白。
+            interrupted = [task.name for task in snapshot.tasks if task.interrupts]
+            missing = self.runtime.versions.missing_nodes(interrupted)
+            if missing:
+                yield ErrorEvent(
+                    data=ErrorData(
+                        message=(
+                            f"结构已变更：待确认的操作所在节点（{'、'.join(missing)}）"
+                            "不在当前运行图里，无法继续。请放弃这次待确认后重新提问。"
+                        )
+                    )
+                )
+                return
+            async for event in translate_events(
+                version.graph,
+                thread_id=thread_id,
+                config=config,
+                inputs=Command(resume=value),
+            ):
+                yield event
 
     async def compact(self, thread_id: str) -> CompactionInfo | None:
         """
@@ -106,20 +117,21 @@ class LangGraphRunner:
         没得压（会话还短、中段不足两条）返回 None，由上层说明原因，不静默通过。
         """
         config = self._config(thread_id)
-        snapshot = await self.graph.aget_state(config)
-        if not snapshot.values:
-            return None
+        async with self.runtime.lease(thread_id) as version:
+            snapshot = await version.graph.aget_state(config)
+            if not snapshot.values:
+                return None
 
-        update = await compact_once(
-            snapshot.values,
-            summary_model=self.summary_model,
-            thread_id=thread_id,
-            force=True,
-        )
-        if not update:
-            return None
+            update = await compact_once(
+                snapshot.values,
+                summary_model=self.summary_model,
+                thread_id=thread_id,
+                force=True,
+            )
+            if not update:
+                return None
 
-        await self.graph.aupdate_state(config, update, as_node=COMPACT_NODE)
+            await version.graph.aupdate_state(config, update, as_node=COMPACT_NODE)
         record = update["compaction"]
         view = await self.history(thread_id)
         return CompactionInfo(
@@ -137,7 +149,8 @@ class LangGraphRunner:
 
         压缩只改"发给模型的视图"，所以这里的消息一条不少——用户看得到被摘要掉的原文。
         """
-        snapshot = await self.graph.aget_state(self._config(thread_id))
+        async with self.runtime.lease(thread_id) as version:
+            snapshot = await version.graph.aget_state(self._config(thread_id))
         view = build_history(snapshot.values)
         logger.debug("读取历史 thread=%s 消息=%d", thread_id, len(view.messages))
         return view
@@ -153,15 +166,18 @@ class LangGraphRunner:
         logger.debug("已删除检查点 thread=%s", thread_id)
 
     async def is_interrupted(self, thread_id: str) -> bool:
-        snapshot = await self.graph.aget_state(self._config(thread_id))
+        async with self.runtime.lease(thread_id) as version:
+            snapshot = await version.graph.aget_state(self._config(thread_id))
         return bool(snapshot.interrupts)
 
     async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
-        snapshot = await self.graph.aget_state(self._config(thread_id))
+        async with self.runtime.lease(thread_id) as version:
+            snapshot = await version.graph.aget_state(self._config(thread_id))
         return [to_interrupt_data(item) for item in snapshot.interrupts]
 
     async def has_dangling_tool_calls(self, thread_id: str) -> bool:
-        snapshot = await self.graph.aget_state(self._config(thread_id))
+        async with self.runtime.lease(thread_id) as version:
+            snapshot = await version.graph.aget_state(self._config(thread_id))
         return bool(unanswered_calls(snapshot.values.get("messages", [])))
 
     async def repair_after_abort(self, thread_id: str) -> int:
@@ -174,28 +190,29 @@ class LangGraphRunner:
         停在待确认（interrupt）上的会话**不动**——那是合法状态，点确认就能继续。
         """
         config = self._config(thread_id)
-        snapshot = await self.graph.aget_state(config)
-        if snapshot.interrupts:
-            return 0
+        async with self.runtime.lease(thread_id) as version:
+            snapshot = await version.graph.aget_state(config)
+            if snapshot.interrupts:
+                return 0
 
-        calls = unanswered_calls(snapshot.values.get("messages", []))
-        if not calls:
-            return 0
+            calls = unanswered_calls(snapshot.values.get("messages", []))
+            if not calls:
+                return 0
 
-        await self.graph.aupdate_state(
-            config,
-            {
-                "messages": [
-                    ToolMessage(
-                        content=INTERRUPTED_MESSAGE,
-                        tool_call_id=call["id"],
-                        status="error",
-                    )
-                    for call in calls
-                ]
-            },
-            as_node="tools",
-        )
+            await version.graph.aupdate_state(
+                config,
+                {
+                    "messages": [
+                        ToolMessage(
+                            content=INTERRUPTED_MESSAGE,
+                            tool_call_id=call["id"],
+                            status="error",
+                        )
+                        for call in calls
+                    ]
+                },
+                as_node="tools",
+            )
         logger.info("补齐被中断的调用 thread=%s 条数=%d", thread_id, len(calls))
         return len(calls)
 
@@ -217,7 +234,8 @@ class LangGraphRunner:
 
         result = []
         for thread_id, timestamp in latest.items():
-            snapshot = await self.graph.aget_state(self._config(thread_id))
+            async with self.runtime.lease(thread_id) as version:
+                snapshot = await version.graph.aget_state(self._config(thread_id))
             result.append(
                 ThreadRecord(
                     thread_id=thread_id,

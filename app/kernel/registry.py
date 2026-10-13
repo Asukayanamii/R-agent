@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Optional
 
-from .fiber import Fiber, PluginRuntime
+from .fiber import Fiber, FiberState, PluginRuntime
 from .utils import CordisError
 
 __all__ = ['RegistryService', 'Inject', 'resolve_plugin']
@@ -94,6 +94,7 @@ class RegistryService:
         self._counter = 0
         self._internal: dict[Any, PluginRuntime] = {}
         self._keep_alive: dict[int, Any] = {}
+        self._essentials: list[Fiber] = []
 
     def _key(self, identity: Any) -> Any:
         """计算插件身份的字典键；不可哈希的对象（如字典）按 id 记并保活。"""
@@ -148,8 +149,12 @@ class RegistryService:
         return runtime
 
     # ================================================================ 启动插件
-    def plugin(self, ctx: Any, plugin: Any, config: Any = None) -> Fiber:
-        """在当前上下文中启动插件，返回对应的 fiber。"""
+    def plugin(self, ctx: Any, plugin: Any, config: Any = None, *, essential: bool = False) -> Fiber:
+        """在当前上下文中启动插件，返回对应的 fiber。
+
+        ``essential=True`` 把它记进"必需清单"（由装配脚本声明），
+        装配完成后用 :meth:`ensure_essentials` 校验——必需的停用不是可以带着跑的降级。
+        """
         resolved = resolve_plugin(plugin)
         if resolved is None:
             raise CordisError('INVALID_PLUGIN', f'{CordisError.Code.INVALID_PLUGIN}, received {type(plugin).__name__}')
@@ -165,7 +170,28 @@ class RegistryService:
             self._internal[key] = runtime
 
         fiber = Fiber(ctx, config, Inject.resolve(resolved.inject), runtime)
+        if essential:
+            self._essentials.append(fiber)
         return fiber
+
+    def ensure_essentials(self) -> None:
+        """启动校验：必需插件必须都在 ACTIVE，否则抛错并点名（缺了就别带着半死的内核跑）。
+
+        覆盖两种"停用"：装载失败（FAILED）与依赖未就绪（PENDING）。
+        报错带上原始失败原因，改起来不用再去翻日志找。
+        """
+        problems: list[str] = []
+        for fiber in self._essentials:
+            if fiber.state is FiberState.ACTIVE:
+                continue
+            name = (fiber.runtime.name if fiber.runtime is not None else None) or fiber.name
+            reason = str(fiber._error) if fiber._error is not None else fiber.state.name
+            problems.append(f'{name}（{reason}）')
+        if problems:
+            raise CordisError(
+                'ESSENTIAL_INACTIVE',
+                '必需插件不可用：' + '；'.join(problems),
+            )
 
     def inject(self, ctx: Any, deps: Any, callback: Callable[..., Any]) -> Fiber:
         """等待依赖就绪后再运行回调（``ctx.plugin({inject, apply})`` 的简写）。"""

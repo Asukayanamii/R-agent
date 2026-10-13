@@ -51,7 +51,7 @@ def _provide(ctx: Context, name: str, value: object) -> None:
     _service_names.append(name)
 
 
-async def _build_runner() -> AgentRunner:
+async def _build_runner(ctx: Context) -> AgentRunner:
     from app.config import (
         AGENTS_ANCESTORS,
         AGENTS_MD_ENABLED,
@@ -83,6 +83,8 @@ async def _build_runner() -> AgentRunner:
         logger.warning("未配置 LLM_API_KEY：对话会直接返回错误说明，历史与列表照常可读")
 
     from app.agent.langgraph_runner import LangGraphRunner
+    from app.agent.models import build_model, build_summary_model
+    from app.harness.runtime import HarnessRuntime
 
     if llm_configured():
         logger.info("对话走模型：model=%s base_url=%s", LLM_MODEL, LLM_BASE_URL)
@@ -136,7 +138,16 @@ async def _build_runner() -> AgentRunner:
         logger.warning("SQLITE_PATH 为空，会话状态仅存于内存，重启即失")
         checkpointer = InMemorySaver()
 
-    return LangGraphRunner(checkpointer)
+    # 图不再是"构建"出来的：HarnessRuntime 装载 loop 插件（必需）、
+    # 合成片段、编译并进版本账本；runner 只是它的门面。
+    runtime = HarnessRuntime(
+        ctx,
+        checkpointer=checkpointer,
+        model=build_model(),
+        summary_model=build_summary_model(),
+    )
+    await runtime.setup()
+    return LangGraphRunner(runtime)
 
 
 async def startup() -> None:
@@ -157,7 +168,7 @@ async def startup() -> None:
     ctx = Context()
     _install_kernel_logging(ctx)
 
-    runner = await _build_runner()
+    runner = await _build_runner(ctx)
     _provide(ctx, "runner", runner)
     checkpointer = getattr(runner, "checkpointer", None)
     if checkpointer is not None:

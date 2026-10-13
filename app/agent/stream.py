@@ -23,8 +23,8 @@ from pydantic import BaseModel
 
 from app.agent.compaction.policy import TAG as COMPACT_TAG
 from app.agent.compaction.runtime import COMPACT_NODE
-from app.agent.graph import log_step_limit
 from app.agent.messages import brief, text_of, to_diff, to_interrupt_data
+from app.agent.nodes import log_step_limit
 from app.event.events import (
     CompactData,
     CompactEvent,

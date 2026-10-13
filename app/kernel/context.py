@@ -238,9 +238,13 @@ class Context:
         self.effect(install, label)
         return holder.get('task')
 
-    def plugin(self, plugin: Any, config: Any = None) -> Fiber:
-        """在当前上下文中加载插件，返回 fiber。"""
-        return self.registry.plugin(self, plugin, config)
+    def plugin(self, plugin: Any, config: Any = None, *, essential: bool = False) -> Fiber:
+        """在当前上下文中加载插件，返回 fiber。
+
+        ``essential=True``（由装配脚本声明）表示"必需插件"：装配完成后
+        :meth:`RegistryService.ensure_essentials` 会校验它是否 ACTIVE，缺了就启动失败。
+        """
+        return self.registry.plugin(self, plugin, config, essential=essential)
 
     def inject(self, deps: Any, callback: Callable[..., Any]) -> Fiber:
         """等待 ``deps`` 就绪后运行回调（``ctx.plugin({inject, apply})`` 的简写）。"""
