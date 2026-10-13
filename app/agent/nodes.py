@@ -18,7 +18,6 @@ from app.agent.compaction.policy import with_summary
 from app.agent.compaction.runtime import compact_once
 from app.agent.messages import usable_compaction
 from app.agent.prompts import build_system_prompt
-from app.agent.retry import ainvoke_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +52,11 @@ def log_step_limit(thread_id: str, exc: Exception) -> None:
     )
 
 
-def make_compact_node(summary_model: BaseChatModel, settings: Any = None):
+def make_compact_node(summary_model: BaseChatModel, settings: Any = None, retry: Any = None):
     """构造压缩检查节点：超水位就把中段摘要掉；不超（或压不动）就原样放行，返回空更新。
 
-    `settings` 由 `builtin/compaction` 插件的配置提供（不传则引用总体配置）。
+    `settings` 由 `builtin/compaction` 插件的配置提供（不传则引用总体配置）；
+    `retry` 是 `builtin/retry` 服务（可选：没有就直调模型，不重试）。
     """
 
     async def compact_context(state: dict) -> dict:
@@ -67,13 +67,16 @@ def make_compact_node(summary_model: BaseChatModel, settings: Any = None):
             summary_model=summary_model,
             thread_id=thread_id,
             settings=settings,
+            retry=retry,
             config=config,
         )
 
     return compact_context
 
 
-def make_model_node(model: BaseChatModel, registry: Any, context: Any = None):
+def make_model_node(
+    model: BaseChatModel, registry: Any, context: Any = None, retry: Any = None
+):
     """
     构造模型调用节点。节点本身无状态：每轮都把 system prompt 重新拼在历史前面，
     历史来自 checkpointer。
@@ -82,6 +85,7 @@ def make_model_node(model: BaseChatModel, registry: Any, context: Any = None):
     所以运行时加/减工具不需要重建图：下一次模型调用就能看到新能力集。
 
     静态上下文块（项目约定 + 技能索引）来自服务 `context`（可选插件）：没装就不注入。
+    `retry` 同理来自服务（可选）：没装就直调模型——**降级方向是"少一层重试"，不是错误**。
 
     压缩过的会话发的是"摘要 + 首条用户消息 + 切点起的原文"（只压视图，原文还在检查点里）。
     `usage_anchor` 记的是这次请求 provider 实报的 input tokens 与"覆盖到第几条**状态里的**
@@ -108,13 +112,16 @@ def make_model_node(model: BaseChatModel, registry: Any, context: Any = None):
             )
 
         model_with_tools = model.bind_tools(list(registry.snapshot()))
-        response = await ainvoke_with_retry(
-            model_with_tools,
-            [{"role": "system", "content": prompt}, *messages],
-            config=config,
-            thread_id=(config.get("configurable") or {}).get("thread_id") or "-",
-            label="模型调用",
-        )
+        call = {
+            "config": config,
+            "thread_id": (config.get("configurable") or {}).get("thread_id") or "-",
+            "label": "模型调用",
+        }
+        prompt_messages = [{"role": "system", "content": prompt}, *messages]
+        if retry is not None:
+            response = await retry.ainvoke(model_with_tools, prompt_messages, **call)
+        else:
+            response = await model_with_tools.ainvoke(prompt_messages, config=config)
         meta = getattr(response, "usage_metadata", None) or {}
         if not meta:
             return {"messages": [response]}

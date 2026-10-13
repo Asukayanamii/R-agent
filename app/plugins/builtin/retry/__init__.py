@@ -1,8 +1,10 @@
-"""
-上游模型调用的重试：错误分类 + 指数退避 + 可见性。
+"""builtin/retry：上游模型调用的重试策略——服务 ``retry``（错误分类 + 指数退避 + 可见性）。
+
+**可替换、不可停用**：图里的模型调用都经它，停了就等于没有重试（瞬态失败直接报错），
+所以进必需清单。**它的旋钮就是它的配置**（`Config`）：次数 / 退避基数 / 单次上限。
 
 照 Pi（earendil-works/pi）的做法——它把重试分成两层：SDK/provider 一层，agent 一层。
-我们只保留 **agent 一层**，并把 SDK 自带的重试关掉（`models.build_model(max_retries=0)`）：
+我们只保留 **agent 一层**，并把 SDK 自带的重试关掉（`builtin/model` 的 `max_retries=0`）：
 
 - **SDK 的重试是隐形的**：不记日志、次数会和我们的叠加（我们的 3 次 × SDK 的 2 次），
   延迟也不可控。Pi 为此显式用 `maxRetries: 0` 调 SDK，再由自己这层统一处理。
@@ -20,8 +22,14 @@
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
+
+from app.kernel import Schema, Service
+
+PLUGIN_ID = 'builtin/retry'
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +41,30 @@ BASE_DELAY_SECONDS = 2.0
 
 MAX_DELAY_SECONDS = 60.0
 """单次退避上限（Pi 的 `retry.maxAgentDelayMs` 默认 60000）。"""
+
+
+@dataclass(frozen=True)
+class RetrySettings:
+    """重试的全部旋钮（由插件配置给出）。默认值 = 改造前行为。"""
+
+    max_retries: int = MAX_RETRIES
+    base_delay: float = BASE_DELAY_SECONDS
+    max_delay: float = MAX_DELAY_SECONDS
+
+    @classmethod
+    def from_mapping(cls, mapping: dict | None) -> 'RetrySettings':
+        options = dict(mapping or {})
+        return cls(
+            max_retries=int(options.get('max_retries', MAX_RETRIES)),
+            base_delay=float(options.get('base_delay', BASE_DELAY_SECONDS)),
+            max_delay=float(options.get('max_delay', MAX_DELAY_SECONDS)),
+        )
+
+    @classmethod
+    def from_app_config(cls) -> 'RetrySettings':
+        """目前没有对应的 .env 项——默认值就是这里的常量。"""
+        return cls()
+
 
 NON_RETRYABLE_PATTERN = re.compile(
     "|".join(
@@ -195,23 +227,26 @@ def is_retryable(exc: BaseException) -> bool:
     return bool(RETRYABLE_PATTERN.search(text))
 
 
-def delay_seconds(exc: BaseException, attempt: int) -> float:
+def delay_seconds(
+    exc: BaseException, attempt: int, settings: RetrySettings | None = None
+) -> float:
     """
     这次重试前等多久。
 
     provider 明确给了 `Retry-After` 就听它的；但要是有上限、而它要求的等待更长，
     直接失败说明原因——静默等几分钟比报错更糟（Pi 的同一处理）。
     """
+    settings = settings or RetrySettings()
     asked = _retry_after_seconds(exc)
     if asked is not None:
-        if MAX_DELAY_SECONDS > 0 and asked > MAX_DELAY_SECONDS:
+        if settings.max_delay > 0 and asked > settings.max_delay:
             raise RuntimeError(
-                f"服务端要求的重试等待 {asked:.0f}s 超过上限 {MAX_DELAY_SECONDS:.0f}s，"
+                f"服务端要求的重试等待 {asked:.0f}s 超过上限 {settings.max_delay:.0f}s，"
                 f"不再等待。原始错误：{exc}"
             )
         return asked
 
-    return min(BASE_DELAY_SECONDS * 2 ** (attempt - 1), MAX_DELAY_SECONDS)
+    return min(settings.base_delay * 2 ** (attempt - 1), settings.max_delay)
 
 
 def _config_with_spy(
@@ -234,8 +269,12 @@ def _config_with_spy(
     elif existing is None:
         handlers = []
     else:
-        # CallbackManager / 单个 handler 之类：取出可达的 handlers
-        handlers = list(getattr(existing, "handlers", []) or [existing])
+        # 有 `handlers` 属性 = 它是**回调管理器**（`AsyncCallbackManager` 之类）：
+        # 取出它可转发的 handlers；**空管理器什么都不带**——把管理器自己当 handler 塞进去，
+        # 回调系统会去调它（`run_inline` 不存在），在 `astream`/`ainvoke` 下直接 AttributeError。
+        # 没有 `handlers` 属性 = 它本身就是个 handler，原样带上。
+        reachable = list(getattr(existing, "handlers", None) or ())
+        handlers = reachable if hasattr(existing, "handlers") else [existing]
     merged["callbacks"] = [*handlers, spy]
 
     if tags:
@@ -247,6 +286,7 @@ async def ainvoke_with_retry(
     model,
     messages: list,
     *,
+    settings: RetrySettings | None = None,
     config: dict | None = None,
     thread_id: str = "-",
     label: str = "模型调用",
@@ -256,12 +296,14 @@ async def ainvoke_with_retry(
     """
     调模型，瞬态失败按指数退避重试；配额/参数类错误立刻抛。
 
+    `settings` 是重试的全部旋钮（由 `builtin/retry` 插件的配置提供；不传则用默认值）。
     `config` 传当前的运行配置（节点里就是 `get_config()`）：探针要追加到它的回调上，
     覆盖传会丢流式事件（见 `_config_with_spy`）。
 
     被取消（用户点停止）**不重试**，原样抛给上层——那是用户的意思，不是失败。
     """
-    for attempt in range(1, MAX_RETRIES + 2):
+    settings = settings or RetrySettings()
+    for attempt in range(1, settings.max_retries + 2):
         spy = _TokenSpy()
         try:
             return await model.ainvoke(
@@ -270,7 +312,7 @@ async def ainvoke_with_retry(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            if attempt > MAX_RETRIES or not is_retryable(exc):
+            if attempt > settings.max_retries or not is_retryable(exc):
                 raise
             if spy.seen and not stream_was_interrupted(exc):
                 logger.warning(
@@ -281,14 +323,59 @@ async def ainvoke_with_retry(
                     exc,
                 )
                 raise
-            delay = delay_seconds(exc, attempt)  # 要求的等待过长时在这里抛出去
+            delay = delay_seconds(exc, attempt, settings)  # 要求的等待过长时在这里抛出去
             logger.warning(
                 "%s 失败（第 %d/%d 次尝试），%.0fs 后重试 thread=%s：%s",
                 label,
                 attempt,
-                MAX_RETRIES,
+                settings.max_retries,
                 delay,
                 thread_id,
                 exc,
             )
             await _sleep(delay)
+
+
+class Config(Schema):
+    max_retries = Schema.integer().default(MAX_RETRIES).description('最多重试几次（首次调用不算）')
+    base_delay = Schema.number().default(BASE_DELAY_SECONDS).description('退避基数（秒）：2^(n-1) 增长')
+    max_delay = Schema.number().default(MAX_DELAY_SECONDS).description('单次退避上限（秒）')
+
+
+def default_config() -> dict:
+    """重试目前没有对应的 .env 项——默认值就是模块里的常量。"""
+    settings = RetrySettings.from_app_config()
+    return {
+        'max_retries': settings.max_retries,
+        'base_delay': settings.base_delay,
+        'max_delay': settings.max_delay,
+    }
+
+
+class RetryService(Service):
+    """服务 ``retry``：`ainvoke` 就是带重试与可见性的模型调用（节点的唯一入口）。"""
+
+    def __init__(self, ctx: Any, config: Any = None) -> None:
+        super().__init__(ctx, 'retry')
+        self.settings = RetrySettings.from_mapping(config)
+
+    async def ainvoke(self, model: Any, messages: list, **kwargs: Any) -> Any:
+        return await ainvoke_with_retry(model, messages, settings=self.settings, **kwargs)
+
+
+def apply(ctx: Any, config: Any = None) -> None:
+    service = RetryService(ctx, config)
+    settings = service.settings
+    ctx.logger.info(
+        '重试策略已就绪：最多 %d 次，退避 %ss 起（上限 %ss）',
+        settings.max_retries,
+        settings.base_delay,
+        settings.max_delay,
+    )
+
+
+plugin = {
+    'apply': apply,
+    'name': PLUGIN_ID,
+    'Config': Config,
+}

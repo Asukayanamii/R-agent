@@ -50,7 +50,11 @@ class Compaction(Service):
     def node(self) -> Callable[..., Any]:
         """抽象节点的实现：`compact` 走的就是它（摘要模型经服务注入）。"""
         if self._node is None:
-            self._node = make_compact_node(self._service_ctx.summary_model, self.settings)
+            self._node = make_compact_node(
+                self._service_ctx.summary_model,
+                self.settings,
+                self._service_ctx.get('retry'),
+            )
         return self._node
 
 

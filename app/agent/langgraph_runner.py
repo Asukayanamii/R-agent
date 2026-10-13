@@ -56,11 +56,14 @@ class LangGraphRunner:
         self.runtime = runtime
         self.protocol = protocol
         self.checkpointer = runtime.checkpointer
-        # 摘要模型也留着：用户主动压缩（compact）走的是图外那条路，得能拿到它
-        self.summary_model = runtime.summary_model
         # 压缩的全部旋钮（由 builtin/compaction 插件的配置提供；不传则引用总体配置）——
         # 手动 /chat/compact 与图内的 compact 节点用同一份设置，口径才不会分叉。
         self.compaction_settings = compaction_settings or CompactionSettings.from_app_config()
+
+    @property
+    def summary_model(self) -> Any:
+        """摘要模型**现取**（`builtin/model` 插件提供的服务）：手动压缩与图内压缩同一个。"""
+        return self.runtime.ctx.get('summary_model')
 
     @staticmethod
     def _config(thread_id: str, workspace: str | None = None) -> dict:

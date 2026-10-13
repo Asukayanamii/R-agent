@@ -25,9 +25,9 @@ from langgraph.types import interrupt
 from app.agent.compaction.policy import with_summary
 from app.agent.compaction.runtime import COMPACT_NODE, compact_once
 from app.agent.messages import error_message, text_of, usable_compaction
-from app.agent.models import build_model, build_summary_model
+from app.plugins.builtin.model import build_model, build_summary_model
 from app.agent.prompts import build_system_prompt
-from app.agent.retry import ainvoke_with_retry
+from app.plugins.builtin.retry import ainvoke_with_retry
 from app.agent.runtime import current_workspace
 from app.agent.tools import TOOLS
 

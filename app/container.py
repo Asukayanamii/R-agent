@@ -64,7 +64,9 @@ async def _load_plugins(ctx: Context) -> None:
         compaction,
         context,
         exporters,
+        model,
         protocol,
+        retry,
         toolbox,
         webui,
     )
@@ -72,7 +74,11 @@ async def _load_plugins(ctx: Context) -> None:
     # 界面类接缝（ctx.assets）：界面插件把静态资产挂到这张表上，装卸都不动路由表
     AssetRegistry(ctx)
 
-    # 必需：协议（wire 形状与编码）、工具箱（工具服务，loop 的服务依赖）
+    # 必需：模型与重试（loop 的模型调用链靠它们；没配 key 时模型插件给占位实现）、
+    # 协议（wire 形状与编码）、工具箱（工具服务，loop 的服务依赖）。
+    # 顺序：model → retry → protocol → toolbox → loop（loop 在 setup 里装载）。
+    await ctx.plugin(model.plugin, model.default_config(), essential=True)
+    await ctx.plugin(retry.plugin, retry.default_config(), essential=True)
     await ctx.plugin(protocol.plugin, essential=True)
     await ctx.plugin(toolbox.plugin, essential=True)
 
@@ -100,23 +106,10 @@ def _compaction_settings(ctx: Context):
 
 async def _build_runner(ctx: Context, auditor: Any = None) -> AgentRunner:
     from app.common.config import (
-        AGENTS_ANCESTORS,
-        AGENTS_MD_ENABLED,
-        COMPACT_AT,
-        COMPACT_ENABLED,
-        COMPACT_KEEP_TOKENS,
-        COMPACT_MODEL,
         CONFIG_WARNINGS,
-        CONTEXT_WINDOW_SOURCE,
         GRAPH_VERSIONS_KEEP,
-        LLM_BASE_URL,
-        LLM_CONTEXT_WINDOW,
-        LLM_MODEL,
-        SKILLS_DIR,
-        SKILLS_ENABLED,
         SQLITE_PATH,
         STUB_ENABLED,
-        llm_configured,
     )
 
     for warning in CONFIG_WARNINGS:
@@ -126,56 +119,13 @@ async def _build_runner(ctx: Context, auditor: Any = None) -> AgentRunner:
         logger.warning("AGENT_STUB=1，对话走桩实现：复读消息、不调模型")
         return StubRunner()
 
-    if not llm_configured():
-        # 没配 key 只是"不能跑对话"：历史、列表、删除都读检查点，跟模型无关，照样可用
-        logger.warning("未配置 LLM_API_KEY：对话会直接返回错误说明，历史与列表照常可读")
-
     from app.agent.langgraph_runner import LangGraphRunner
-    from app.agent.models import build_model, build_summary_model
     from app.harness.runtime import HarnessRuntime
     from app.harness.versions import VersionRegistry
     from app.plugins.builtin import loop
 
-    if llm_configured():
-        logger.info("对话走模型：model=%s base_url=%s", LLM_MODEL, LLM_BASE_URL)
-
-    if COMPACT_ENABLED:
-        # 窗口值写进日志、连来源一起写：填错了要能一眼看出来（默认 64k 对大窗口模型偏小）
-        logger.info(
-            "上下文压缩已开启：窗口 %d tokens（来源：%s），超过 %.0f%%（%d）触发，"
-            "保留最近 %d；摘要模型 %s",
-            LLM_CONTEXT_WINDOW,
-            CONTEXT_WINDOW_SOURCE,
-            COMPACT_AT * 100,
-            int(LLM_CONTEXT_WINDOW * COMPACT_AT),
-            COMPACT_KEEP_TOKENS,
-            COMPACT_MODEL or f"跟随主模型（{LLM_MODEL}）",
-        )
-    else:
-        logger.info(
-            "自动压缩已关闭（COMPACT_ENABLED=0）：压缩插件以 enabled=false 装载，"
-            "compact 节点照常存在（手动 /chat/compact 仍可用）"
-        )
-
-    # 技能与项目约定：把"从哪儿找"写进日志——不生效时第一个要看的就这几行
-    if SKILLS_ENABLED:
-        logger.info(
-            "技能已开启：工作区库 <工作区>/.my_agent/skills；全局库 %s",
-            SKILLS_DIR or "（未配置 SKILLS_DIR，只有工作区技能）",
-        )
-    else:
-        logger.info("技能已关闭（SKILLS_ENABLED=0）")
-
-    if AGENTS_MD_ENABLED:
-        logger.info(
-            "项目约定注入已开启：全局 ~/.my_agent/AGENTS.md%s",
-            "＋祖先目录（到含 .git 的目录为止）＋工作区根"
-            if AGENTS_ANCESTORS
-            else "＋工作区根（AGENTS_ANCESTORS=0，不向上遍历）",
-        )
-    else:
-        logger.info("项目约定注入已关闭（AGENTS_MD_ENABLED=0）")
-
+    # 模型 / 压缩 / 技能与约定各自的自述都归它们自己的插件（见 builtin/model、compaction、context）——
+    # 装配根只报"装配本身"的事，不然同一件事两处写、改一处忘一处。
     if SQLITE_PATH:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
@@ -193,11 +143,10 @@ async def _build_runner(ctx: Context, auditor: Any = None) -> AgentRunner:
 
     # 图不再是"构建"出来的：HarnessRuntime 装载**骨架插件**（由这里交进去）、
     # 合成片段、编译并进版本账本；runner 只是它的门面。
+    # 模型不再由这里建（`builtin/model` 插件提供 model / summary_model 两个服务）。
     runtime = HarnessRuntime(
         ctx,
         checkpointer=checkpointer,
-        model=build_model(),
-        summary_model=build_summary_model(),
         base=loop.plugin,
         versions=VersionRegistry(keep=GRAPH_VERSIONS_KEEP),
         on_version=auditor.record if auditor is not None else None,

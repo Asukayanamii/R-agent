@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from time import monotonic
 
 from langchain_core.language_models import BaseChatModel
+from typing import Any
 
 from app.agent.compaction.policy import (
     TAG,
@@ -30,7 +31,6 @@ from app.agent.compaction.policy import (
 )
 from app.agent.messages import text_of
 from app.agent.prompts import build_system_prompt
-from app.agent.retry import ainvoke_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ async def compact_once(
     summary_model: BaseChatModel,
     thread_id: str,
     settings: CompactionSettings | None = None,
+    retry: Any = None,
     force: bool = False,
     config: dict | None = None,
 ) -> dict:
@@ -69,6 +70,7 @@ async def compact_once(
 
     `force=True`（手动触发）跳过阈值、开关与冷却：用户点了就是要压，跟自动那套闸门无关。
     `settings` 是压缩的全部旋钮（由 `builtin/compaction` 插件的配置提供；不传则引用总体配置）。
+    `retry` 是 `builtin/retry` 服务（可选：没有就直调模型，不重试）。
     """
     settings = settings or CompactionSettings.from_app_config()
     if not force and not settings.enabled:
@@ -105,14 +107,18 @@ async def compact_once(
     )
     started = monotonic()
     try:
-        response = await ainvoke_with_retry(
-            summary_model,
-            summary_request(previous, body),
-            config=config,
-            thread_id=thread_id,
-            label="摘要调用",
-            tags=[TAG],
-        )
+        request = summary_request(previous, body)
+        if retry is not None:
+            response = await retry.ainvoke(
+                summary_model,
+                request,
+                config=config,
+                thread_id=thread_id,
+                label="摘要调用",
+                tags=[TAG],
+            )
+        else:
+            response = await summary_model.ainvoke(request, config=config)
     except Exception as exc:
         # 压不动不是会话的错：本轮照旧发全量，退避之后再试
         note_failure(thread_id)

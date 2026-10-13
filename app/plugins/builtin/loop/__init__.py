@@ -76,7 +76,7 @@ def apply(ctx: Any) -> None:
             NodeSpec('pre_model', run=_passthrough),
             NodeSpec(
                 'agent',
-                run=make_model_node(ctx.model, ctx.tools, ctx.get('context')),
+                run=make_model_node(ctx.model, ctx.tools, ctx.get('context'), ctx.get('retry')),
                 reads=(MESSAGES, COMPACTION),
                 writes=(MESSAGES, USAGE_ANCHOR),
             ),

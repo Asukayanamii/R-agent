@@ -15,16 +15,16 @@
 | 往哪走 | 好用 | 通用、可插拔 |
 
 **内核提取已落地一部分**（阶段 A–E，外加重排过目录）：插件内核内联在 `app/kernel/`，装配层
-（`app/harness/`：片段契约、合成器、版本、资产路由、节点壳）与八个内置插件（`loop` / `protocol` /
-`toolbox` / `compaction` / `approvals` / `context` / `exporters` / `webui`）都已就位，`container.py`
-也从手工装配换成了内核 Context；插件发现与信任、热重载也做了（全局库 + 工作区库 + 按文件批准）。
-**还没做**：`model` / `retry` / `store` / `sandbox` 这四个内置插件、图版本审计表、agent 自改图；
-路线图的另外两件事（System-1 路由、自改进）也没开始。
+（`app/harness/`：片段契约、合成器、版本、资产路由、节点壳）与十个内置插件（`loop` / `protocol` /
+`toolbox` / `model` / `retry` / `compaction` / `approvals` / `context` / `exporters` / `webui`）都已就位，
+`container.py` 也从手工装配换成了内核 Context；插件发现与信任、热重载也做了（全局库 + 工作区库 +
+按文件批准，作用域按会话工作区分区）。
+**还没做**：`store` / `sandbox` 两个插件、agent 自改图；路线图的另外两件事（System-1 路由、自改进）也没开始。
 
 ## 目标形态：LangGraph 的执行图 × Cordis 的装配图
 
 内核 = **LangGraph 图工作流** × **插件思想（参考 [Cordis](https://github.com/cordiverse/cordis)）**。
-设计已部分落地（阶段 A–E）：装配层与八个内置插件在代码里，两级插件库的发现、信任与热重载也在
+设计已部分落地（阶段 A–E + J/K1）：装配层与十个内置插件在代码里，两级插件库的发现、信任与热重载也在
 （见"插件库"一节）；**agent 自改图**还没做——下面讲**目标形态与为什么**。
 
 - **图工作流**是骨架：`stamp → [entry] → compact → [pre_model] → agent → [post_model]`，
@@ -77,17 +77,17 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 
 ## 路线图
 
-方向先写清楚。**第 1 件进行中**（阶段 A–E：内核、装配层、八个内置插件、插件发现与信任已落地），另外两件还没开始。
+方向先写清楚。**第 1 件进行中**（阶段 A–E/J/K：内核、装配层、十个内置插件、插件发现与信任已落地），另外两件还没开始。
 
 ### 1. 插件化内核
 
 把「能力」和「装配」拆开：工具、技能、审批、压缩、存储各自成为一个插件，依赖靠声明而不是 import
 具体实现，生命周期跟着容器走（装上即生效、卸下即清理）。现在换一个实现要动装配根，之后只是换一个插件。
 
-**进度（阶段 A–E）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
+**进度（阶段 A–E / J / K1）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
 （`app/harness/`：锚点插链、动态 schema、两段校验、版本与租约、节点壳与熔断、合成报告）；
-八个内置插件（骨架 `loop`、协议 `protocol`、工具箱 `toolbox`、压缩 `compaction`、
-审批 `approvals`、上下文 `context`、观测 `exporters`、前端 `webui`）；工具集可在**运行时**
+十个内置插件（骨架 `loop`、协议 `protocol`、工具箱 `toolbox`、模型 `model`、重试 `retry`、
+压缩 `compaction`、审批 `approvals`、上下文 `context`、观测 `exporters`、前端 `webui`）；工具集可在**运行时**
 增删（下一次模型调用生效、不需要重建图）；`/ui` 改成表驱动的动态资产路由；容器换成
 Context 装配（必需插件缺了启动即失败）；两级插件库的发现、按文件批准与热重载
 （`app/plugins/discover.py`：`.json` 纯声明片段 / `.py` 可编程插件，内容指纹轮询，回合边界换图）；
@@ -589,8 +589,8 @@ app/
   kernel/     L0 通用插件内核  内联的 Cordis 版内核（零 app 依赖，整体可搬走）
   harness/    L1 装配层       片段契约 → 合成器 → 版本/租约 → 报告/资产/节点壳
   agent/      L2 运行时       节点、模型、提示词、工具、沙箱、压缩
-  plugins/    L3 插件         builtin/ 下八个：loop（骨架）、protocol、toolbox、compaction、
-                             approvals、context、exporters、webui（前端资产）+ discover
+  plugins/    L3 插件         builtin/ 下十个：loop（骨架）、protocol、toolbox、model、retry、
+                              compaction、approvals、context、exporters、webui（前端资产）+ discover
   web/        L4 宿主         经典三层 + 宿主小件
       api/        表现层      HTTP、请求体校验、SSE 外壳
       service/    业务层      编排 Agent 执行、维护会话索引与工作区
