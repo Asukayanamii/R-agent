@@ -14,10 +14,10 @@
 | 装了什么 | FastAPI + SSE + 调试前端 + 桌面模式，一套配齐 | 保留图的编排与事件协议，应用形态交给插件 |
 | 往哪走 | 好用 | 通用、可插拔 |
 
-**内核提取已落地一部分**（阶段 A–E）：插件内核内联在 `app/kernel/`，装配层（`app/harness/`：
-片段契约、合成器、版本、资产路由、节点壳）与八个内置插件（`loop` / `protocol` / `toolbox` /
-`compaction` / `approvals` / `context` / `exporters` / `webui`）都已就位，`container.py` 也从
-手工装配换成了内核 Context；插件发现与信任、热重载也做了（全局库 + 工作区库 + 按文件批准）。
+**内核提取已落地一部分**（阶段 A–E，外加重排过目录）：插件内核内联在 `app/kernel/`，装配层
+（`app/harness/`：片段契约、合成器、版本、资产路由、节点壳）与八个内置插件（`loop` / `protocol` /
+`toolbox` / `compaction` / `approvals` / `context` / `exporters` / `webui`）都已就位，`container.py`
+也从手工装配换成了内核 Context；插件发现与信任、热重载也做了（全局库 + 工作区库 + 按文件批准）。
 **还没做**：`model` / `retry` / `store` / `sandbox` 这四个内置插件、图版本审计表、agent 自改图；
 路线图的另外两件事（System-1 路由、自改进）也没开始。
 
@@ -90,7 +90,9 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 审批 `approvals`、上下文 `context`、观测 `exporters`、前端 `webui`）；工具集可在**运行时**
 增删（下一次模型调用生效、不需要重建图）；`/ui` 改成表驱动的动态资产路由；容器换成
 Context 装配（必需插件缺了启动即失败）；两级插件库的发现、按文件批准与热重载
-（`app/plugins/discover.py`：`.json` 纯声明片段 / `.py` 可编程插件，内容指纹轮询，回合边界换图）。
+（`app/plugins/discover.py`：`.json` 纯声明片段 / `.py` 可编程插件，内容指纹轮询，回合边界换图）；
+目录按层重排过（顶层从 13 个平铺包收成"内核侧四层 + `web/` + `common/` + 三个入口文件"，
+依赖方向由 `tests/test_layout.py` 守着）。
 **未做**：`model` / `retry` / `store` / `sandbox` 四个内置插件、图版本审计表、agent 自改图的工具。
 
 ### 2. 节点路由：Jev 类 System One 决策模型
@@ -174,7 +176,7 @@ cp .env.example .env
 （`Config` schema + `default_config()`），上面这些环境变量是它们的**默认值来源**——所以改 `.env`
 仍然"改一处"。装配时插件配置 = 默认值 + 用户覆盖 dict 的合并（覆盖层留给将来的设置界面）；
 纯插件配置项（例如 `builtin/approvals` 的 `required`）不进根配置，就地在该插件的说明里。
-加新插件时，它的可配置项由它自己做插件时声明，不动 `app/config`。
+加新插件时，它的可配置项由它自己做插件时声明，不动 `app/common/config`。
 
 ## 插件库（发现、信任、热重载）
 
@@ -239,7 +241,7 @@ python -m uvicorn app.main:app --reload --port 8000
 非流式接口走 `Result` 包装（`{code, message, data}`，`code=0` 为成功）。
 
 **异常有两个出口，各自兜住全部异常**：流式在 `builtin/protocol` 的编码层补一帧 `error` + `done`，
-非流式由 `app/handler/` 的全局处理器包成 500 + `Result`。两边都返回异常原文（堆栈只进服务端日志），
+非流式由 `app/web/handler/` 的全局处理器包成 500 + `Result`。两边都返回异常原文（堆栈只进服务端日志），
 所以上游（模型服务、数据库）出错既不会带走进程，前端也总能拿到明确的结束标记。
 
 **停止一轮 = 断开这条流。** 点停止（或按 `Esc`）会中止当前请求，服务端在取消里做收尾：
@@ -577,24 +579,45 @@ curl -N -sS -X POST http://127.0.0.1:8000/chat/stream \
 
 ## 分层
 
-经典三层，依赖方向单向向下：
+**目录顺序 = 依赖方向**：内核侧四层从下往上排，宿主收在 `web/` 里，跨层共享的叶子收在 `common/` 里。
 
 ```
-app/api/          表现层      HTTP、请求体校验、SSE 外壳
-     ↓
-app/service/      业务层      编排 Agent 执行、维护会话索引与工作区
-     ↓
-app/dao/          数据访问层  只读写自有表：thread_index / workspace / thread_workspace
-app/agent/        Agent 运行时 节点实现、沙箱、工具（不 import kernel/harness）
-     ↓
-app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换用
-
-app/kernel/       插件内核    内联的 Cordis 版内核（不依赖 app.*，整体可搬走）
-app/harness/      装配层      片段契约 → 合成器 → 版本；租约；资产表与动态路由
-app/plugins/      插件        builtin/ 下八个：loop（骨架）、protocol、toolbox、compaction、
-                              approvals、context、exporters、webui（前端资产）
-app/container.py  装配根      一串 ctx.plugin(...) + 服务注册；必需插件缺了启动即失败
+app/
+  kernel/     L0 通用插件内核  内联的 Cordis 版内核（零 app 依赖，整体可搬走）
+  harness/    L1 装配层       片段契约 → 合成器 → 版本/租约 → 报告/资产/节点壳
+  agent/      L2 运行时       节点、模型、提示词、工具、沙箱、压缩
+  plugins/    L3 插件         builtin/ 下八个：loop（骨架）、protocol、toolbox、compaction、
+                             approvals、context、exporters、webui（前端资产）+ discover
+  web/        L4 宿主         经典三层 + 宿主小件
+      api/        表现层      HTTP、请求体校验、SSE 外壳
+      service/    业务层      编排 Agent 执行、维护会话索引与工作区
+      dao/        数据访问层  只读写自有表：thread_index / workspace / thread_workspace
+      handler/    异常出口    非流式那半边的兜底（流式的在 builtin/protocol）
+      result/  constant/      宿主侧的响应封套（Result / ResultCode）
+  common/     共享叶子       config / exceptions / models——谁都能用，它谁也不依赖
+  main.py  desktop.py  container.py   进程入口 + 装配根（一条 ctx.plugin(...) 串起全部）
 ```
+
+规则不是建议：`tests/test_layout.py` 按下面这张表扫 import，**改错地方会红**。
+
+- **内核侧单向向上**：kernel → harness → agent → plugins；逆向 import = 违规
+- **宿主只向下**：`web/*` 可以 import 内核侧任何层，反向不允许；web 内部 api → service → dao 单向
+- **`common/` 只收叶子**：它不许 import 任何 `app.*`；出现第一个 app 内依赖就说明放错了
+- **入口与装配根豁免**：`main.py` / `desktop.py` / `container.py` / `harness/__main__.py`；
+  唯一显式例外是 `web/api` 经 `app.container` 取服务（服务定位器，装配根是唯一的全局句柄）
+
+> 自查一条：`grep -rn "from app\.web" app/{kernel,harness,agent,plugins,common}` 应当为空。
+
+**新代码放哪一层**（拿不准就看这张表）：
+
+| 要加的东西 | 放哪 | 判据 |
+| --- | --- | --- |
+| 通用机制 | `kernel/` | 换个项目也能用；`kernel/` 自己不许 import `app.*` |
+| "图怎么拼"的机制与产出契约 | `harness/` | 片段契约、合成、版本、接缝形状（`events.py`） |
+| 图内实现与领域能力 | `agent/` | 节点实现、模型、提示词、工具、沙箱、压缩 |
+| 把能力接进装配 | `plugins/` | 写 `ctx.provide(...)` / `ctx.structure.contribute(...)` 的地方 |
+| HTTP / 业务编排 / 存储 | `web/` | 经典三层，单向向下 |
+| 被两层以上使用的纯类型或配置 | `common/` | 且它自己不依赖任何 `app.*` |
 
 `app/agent/` 内部按**关注点**分文件——一个模块名说清一件事，别再往 `langgraph_runner.py` 里塞：
 
@@ -615,20 +638,21 @@ app/container.py  装配根      一串 ctx.plugin(...) + 服务注册；必需�
 
 - `app/container.py` 是**组装根**：一串 `ctx.plugin(...)`（必需项标 `essential=True`）+ 服务注册；
   选哪个实现、连接何时开关，都属于应用装配
-- `app/handler/` 是**全局异常处理**：非流式那半边的兜底出口（流式的在 `builtin/protocol`）
-- `plugins/builtin/protocol/` 是**协议模型**（wire format）：前端能看见的一切形状与 SSE 编码。判据只有一条——
-  **要不要跨 HTTP 边界**：要 → 这里（以及 `app/api` 的返回注解）是 pydantic，供 OpenAPI；只在层间流转 →
-  放 `app/models/`，dataclass 不带校验。业务层把实体映射成列表项与回执，表现层只负责包 `Result`；
-  **dao 不 import 它**（存储层不该知道协议）。请求体是入站的 HTTP 校验，留在 api 层
-- `app/exceptions/` 放自定义异常（`SandboxDenied`、`InvalidInput`）
+- `app/web/handler/` 是**全局异常处理**：非流式那半边的兜底出口（流式的在 `builtin/protocol`）
+- `app/harness/events.py` 是**事件词汇表**（图的产出形状，与 `fragment.py` 的接缝表同侧）；
+  `plugins/builtin/protocol/` 负责把它**映射 + 编码**成 wire 形状（SSE 帧）。判据只有一条——
+  **要不要跨 HTTP 边界**：要 → pydantic（`harness/events.py` + `web/api` 的返回注解）；只在层间流转 →
+  放 `app/common/models/`，dataclass 不带校验。业务层把实体映射成列表项与回执，表现层只负责包 `Result`；
+  **dao 不 import 协议**（存储层不该知道协议）。请求体是入站的 HTTP 校验，留在 `web/api` 层
+- `app/common/exceptions/` 放自定义异常（`SandboxDenied`、`InvalidInput`）
 - checkpointer **不单独抽 DAO**：那是 LangGraph 自己的存储，不是我们写的 SQL
 
-**`app/` 下每个关注点都是一级包**，不放散落的同名模块——`app/config/`、`app/result/`、
-`app/constant/` 都一样。包内的模块名**别和包同名**，否则会出现 `app.exceptions.exceptions`
-这种双重叠词；所以"默认名字必然等于包名"的那几个（`config`、`exceptions`、`handler`）直接把
-代码写在 `__init__.py` 里，其余一律具名模块（`api/chat.py`、`harness/composer.py`、`dao/workspace_dao.py`）。
+**一个关注点一个包**（不放散落的同名模块），包按归属分组：内核侧四层、`web/`、`common/`。
+包内的模块名**别和包同名**，否则会出现 `app.common.exceptions.exceptions` 这种双重叠词；
+所以"默认名字必然等于包名"的那几个（`config`、`exceptions`、`handler`）直接把代码写在
+`__init__.py` 里，其余一律具名模块（`web/api/chat.py`、`harness/composer.py`、`web/dao/workspace_dao.py`）。
 
-> `app/config/__init__.py` 的 `PROJECT_ROOT` 是**按目录层级数出来的**，挪文件必须同步改。
+> `app/common/config/__init__.py` 的 `PROJECT_ROOT` 是**按目录层级数出来的**，挪文件必须同步改。
 > 它算错不会报错，只会让相对路径的配置静默写到别处去，所以那里有启动断言兜底。
 
 ## 日志
@@ -656,7 +680,7 @@ app/container.py  装配根      一串 ctx.plugin(...) + 服务注册；必需�
 | 要改什么 | 改哪里 |
 | --- | --- |
 | 加工具 | `app/agent/tools/` 下新建文件，在 `__init__.py` 的 `TOOLS` 里注册 |
-| 给插件加可配置项 | 在**插件自己**的 `Config` + `default_config()` 里加；只有它也要暴露成 `.env` 全局项时，才同步 `app/config` + `.env.example` + 本表三处 |
+| 给插件加可配置项 | 在**插件自己**的 `Config` + `default_config()` 里加；只有它也要暴露成 `.env` 全局项时，才同步 `app/common/config` + `.env.example` + 本表三处 |
 | 加一条图内链（不改代码） | 写一个 `.json` 片段声明放进插件库（全局库直接生效；工作区库还要进 `<工作区>/.my_agent/plugins.json` 的 `trusted`），见"插件库"一节 |
 | 加可编程插件 | 插件库里放 `.py`：`plugin = {"apply": apply, "name": "..."}`；信任规则同上 |
 | 加技能 | `<工作区>/.my_agent/skills/<名字>/SKILL.md`，或全局库 `~/.my_agent/skills`；**不用改代码** |
@@ -664,5 +688,5 @@ app/container.py  装配根      一串 ctx.plugin(...) + 服务注册；必需�
 | 加需审批的工具 | 装配时给 `builtin/approvals` 传 `{"required": ["bash"]}`（即时生效） |
 | 换存储 | `app/container.py` 里换 checkpointer |
 | 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在容器里替换 |
-| 换事件类型 | `app/plugins/builtin/protocol/events.py`（并 bump 协议版本），前端同步加一个 `case` |
+| 换事件类型 | `app/harness/events.py`（并 bump 协议版本），前端同步加一个 `case`；映射与编码在 `plugins/builtin/protocol/` |
 | 换前端 | `app/plugins/builtin/webui/static/` 可整体替换（或换一份 webui 插件），事件处理逻辑可直接移植到 Next.js |
