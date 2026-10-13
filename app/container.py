@@ -62,6 +62,7 @@ async def _load_plugins(ctx: Context) -> None:
         compaction,
         context,
         exporters,
+        graph_tools,
         model,
         protocol,
         retry,
@@ -87,7 +88,7 @@ async def _load_plugins(ctx: Context) -> None:
     # 每个插件的配置**由插件自己声明默认值**（`default_config()` 引用总体配置 .env），
     # 装配脚本只负责把 base 交进去——将来"用户在前端改设置"的落点就在这里：
     # base 与用户覆盖 dict 合并后再交给插件（覆盖层还没做，形状先留好）。
-    optional = (compaction, context, approvals, exporters, sandbox, webui)
+    optional = (compaction, context, approvals, exporters, sandbox, graph_tools, webui)
     for module in optional:
         name = module.PLUGIN_ID
         base = module.default_config() if hasattr(module, 'default_config') else None
@@ -184,10 +185,16 @@ async def startup() -> None:
     runner = await _build_runner(ctx)
     _provide(ctx, "runner", runner)
 
+    # 只读的图视图（服务 `graph`）：报告 / 片段清单 / 审计——`inspect_graph` 工具与排查都吃它
+    runtime = getattr(runner, "runtime", None)
+    if runtime is not None:
+        from app.harness.inspect import GraphInfo
+
+        _provide(ctx, "graph", GraphInfo(runtime))
+
     # 插件库在 runner **之后**：骨架（loop）要先在架子上——片段是照着锚点表校验的。
     # `on_scope` 装到 runtime 上（stub 模式没有 runtime，整段跳过）。
     libraries = await _build_libraries(ctx)
-    runtime = getattr(runner, "runtime", None)
     if libraries is not None:
         _provide(ctx, "plugins", libraries)
         if runtime is not None:
