@@ -59,6 +59,7 @@ async def _load_plugins(ctx: Context) -> None:
     from app.harness.assets import AssetRegistry
     from app.plugins.builtin import (
         approvals,
+        atomic_tools,
         compaction,
         context,
         exporters,
@@ -95,7 +96,17 @@ async def _load_plugins(ctx: Context) -> None:
     # 每个插件的配置**由插件自己声明默认值**（`default_config()` 引用总体配置 .env），
     # 装配脚本只负责把 base 交进去——将来"用户在前端改设置"的落点就在这里：
     # base 与用户覆盖 dict 合并后再交给插件（覆盖层还没做，形状先留好）。
-    optional = (compaction, context, approvals, exporters, sandbox, skillbook, graph_tools, webui)
+    optional = (
+        compaction,
+        context,
+        approvals,
+        exporters,
+        sandbox,
+        skillbook,
+        atomic_tools,
+        graph_tools,
+        webui,
+    )
     for module in optional:
         name = module.PLUGIN_ID
         base = module.default_config() if hasattr(module, 'default_config') else None

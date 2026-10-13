@@ -39,8 +39,23 @@ async def edit(
     - 确实要多处一起改时传 replace_all=true
     - 找不到完全一致的片段时，会退化为忽略行尾空白的匹配
     - 只改一小段用这个，不要用 write 整文件覆盖
+    - **要改好几处（哪怕跨文件）用 `edit_many`**：一次调用全改完，别一处一次
     - **改已有文件就用这个**，别用 bash 的 sed -i / tee：这里保留原文件的换行风格，
       也不会把没打算改的地方顺手改掉
+    """
+    message, diff = apply_edit(path, old_string, new_string, replace_all)
+    return message, diff
+
+
+def apply_edit(
+    path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> tuple[str, dict | None]:
+    """替换本体（与 `@tool` 壳分开）：批量工具要在同一套语义上循环，直接复用这里。
+
+    返回 (给模型的一句话, 给界面画的差异)。
     """
     if not old_string:
         fail("old_string 不能为空")

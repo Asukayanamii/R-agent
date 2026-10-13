@@ -82,7 +82,7 @@ plugin = {
 | --- | --- |
 | `ctx.provide(name, value)` | 提供服务（服务名就是抽象节点的 `interface`） |
 | `ctx.structure.contribute(fragment)` | 贡献片段（code 里手写 `Fragment`） |
-| `ctx.tools.register(tool)` | 加工具（下一次模型调用就能用，不用重建图） |
+| `ctx.tools.register(tool)` | 加工具（下一次模型调用就能用，不用重建图）；**同名是顶替**，卸载时还原被顶替的那个 |
 | `ctx.assets.mount(alias, dir)` | 挂静态资产（前端插件用的就是它），页面在 `/<alias>/…` |
 | `ctx.cleanup(fn)` / `ctx.resource.acquire(fn)` | 卸载时清理（异步清理也支持） |
 | `ctx.spawn(coro)` | 后台任务（卸载时取消并等待） |

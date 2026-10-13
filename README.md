@@ -15,16 +15,16 @@
 | 往哪走 | 好用 | 通用、可插拔 |
 
 **内核提取已落地一部分**（阶段 A–E / J / K / F / L）：插件内核内联在 `app/kernel/`，装配层
-（`app/harness/`：片段契约、合成器、版本、资产路由、节点壳）与十四个内置插件（`loop` / `protocol` /
-`toolbox` / `model` / `retry` / `store` / `sandbox` / `compaction` / `approvals` / `context` /
-`exporters` / `graph_tools` / `skillbook` / `webui`）都已就位，`container.py` 也从手工装配换成了内核
+（`app/harness/`：片段契约、合成器、版本、资产路由、节点壳）与十五个内置插件（`loop` / `protocol` /
+`toolbox` / `atomic_tools` / `model` / `retry` / `store` / `sandbox` / `compaction` / `approvals` /
+`context` / `exporters` / `graph_tools` / `skillbook` / `webui`）都已就位，`container.py` 也从手工装配换成了内核
 Context；插件发现与信任、热重载、按会话工作区分区、agent 自改图、内置技能库都做了。
 **还没做**：路线图的另外两件事（System-1 路由、自改进）。
 
 ## 目标形态：LangGraph 的执行图 × Cordis 的装配图
 
 内核 = **LangGraph 图工作流** × **插件思想（参考 [Cordis](https://github.com/cordiverse/cordis)）**。
-设计已部分落地（阶段 A–E + J/K/F/L）：装配层与十四个内置插件在代码里，两级插件库的发现、信任、
+设计已部分落地（阶段 A–E + J/K/F/L/N）：装配层与十五个内置插件在代码里，两级插件库的发现、信任、
 热重载、按会话工作区分区、agent 自改图、内置技能库都在（见"插件库"一节）；**路线图的另外两件事**
 （System-1 路由、自改进）还没开始。
 
@@ -78,7 +78,7 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 
 ## 路线图
 
-方向先写清楚。**第 1 件进行中**（阶段 A–E/J/K/F/L：内核、装配层、十四个内置插件、插件发现与信任、自改图、内置技能已落地），另外两件还没开始。
+方向先写清楚。**第 1 件进行中**（阶段 A–E/J/K/F/L/N：内核、装配层、十五个内置插件、插件发现与信任、自改图、内置技能已落地），另外两件还没开始。
 
 ### 1. 插件化内核
 
@@ -87,7 +87,7 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 
 **进度（阶段 A–E / J / K / F / L）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
 （`app/harness/`：锚点插链、动态 schema、两段校验、版本与租约、节点壳与熔断、合成报告）；
-十四个内置插件（骨架 `loop`、协议 `protocol`、工具箱 `toolbox`、模型 `model`、重试 `retry`、
+十五个内置插件（骨架 `loop`、协议 `protocol`、工具箱 `toolbox`、批量工具 `atomic_tools`、模型 `model`、重试 `retry`、
 存储 `store`、沙箱策略 `sandbox`、压缩 `compaction`、审批 `approvals`、上下文 `context`、
 观测 `exporters`、自改图 `graph_tools`、内置技能 `skillbook`、前端 `webui`）；工具集可在**运行时**
 增删（下一次模型调用生效、不需要重建图）；`/ui` 改成表驱动的动态资产路由；容器换成
@@ -313,7 +313,7 @@ python -m uvicorn app.main:app --reload --port 8000
 
 ## 工具
 
-八个，参考 Pi（earendil-works/pi）的设计，一个工具一个文件：
+内置八个，参考 Pi（earendil-works/pi）的设计，一个工具一个文件；`builtin/atomic_tools` 插件再补两个**批量版**：
 
 | 工具 | 作用 | 要点 |
 | --- | --- | --- |
@@ -322,9 +322,19 @@ python -m uvicorn app.main:app --reload --port 8000
 | `edit` | 精确替换片段 | 默认要求 `old_string` 唯一；找不到时退化为忽略行尾空白匹配；保留原文件换行风格；另外返回结构化差异（见下） |
 | `ls` | 列目录 | 目录在前，带大小与修改时间 |
 | `find` | 按 glob 找文件 | `*` 跨目录，结果排序 |
-| `grep` | 按正则搜内容 | 支持 glob 过滤与忽略大小写；跳过噪音目录与二进制文件 |
+| `grep` | 按正则搜内容 | 支持 glob 过滤、忽略大小写；`before`/`after` 给上下文行（`:` 命中、`-` 上下文）；跳过噪音目录与二进制文件 |
 | `bash` | 执行命令 | 流式读取、内存有上限、超时杀进程树、Windows 优先用 Git Bash |
 | `get_current_time` | 取当前时间 | 八种格式（`iso` 默认 / `timestamp` / `date` / `time` / `human` / `cn` / `rfc` / `full`），支持 IANA 命名时区 |
+| `edit_many`（插件） | **一次改多处**（可跨文件） | 失败即停，并说清"第几条、为什么、前面几条已应用"；单文件时照样给界面画差异 |
+| `read_many`（插件） | **一次读多段** | 单个失败不影响其它（读是幂等的），每段仍带行号与续读位置 |
+
+**为什么要有批量版**：工具调用是**一次一轮模型往返**——一处一改的接口，模型就会一处一返回。
+真跑记录（改一份 2400 行的前端单文件，无批量工具）：65 次工具调用 ≈ 65 次模型往返，
+31.6 分钟里 91% 的时间花在往返之间（`edit` 16 次、`read` 34 次，大半是"改一处再看一眼"）。
+批量版把这类工作压成个位数调用。工具描述里也写明了"改多处用 `edit_many`，别一处一次"。
+
+插件注册同名工具是**顶替**（可以拿来"升级"内置工具），并且**可回退**：卸载插件时
+`Toolbox.register` 会把被顶替的那个还原回去（"注册即 effect"＝回到注册前，不是删掉这个名字）。
 
 **所有工具的输出都有上限**（50KB / 2000 行）。`read` 保留开头并提示续读位置；
 `bash` / `grep` / `find` / `ls` 保留尾部或计数。截断时会**明确告知丢了多少**——
@@ -685,8 +695,8 @@ app/
   kernel/     L0 通用插件内核  内联的 Cordis 版内核（零 app 依赖，整体可搬走）
   harness/    L1 装配层       片段契约 → 合成器 → 版本/租约 → 报告/资产/节点壳
   agent/      L2 运行时       节点、模型、提示词、工具、沙箱、压缩
-  plugins/    L3 插件         builtin/ 下十四个：loop（骨架）、protocol、toolbox、model、retry、
-                              store、sandbox、compaction、approvals、context、exporters、
+  plugins/    L3 插件         builtin/ 下十五个：loop（骨架）、protocol、toolbox、atomic_tools（批量工具）、
+                              model、retry、store、sandbox、compaction、approvals、context、exporters、
                               graph_tools、skillbook、webui（前端资产）+ discover
   web/        L4 宿主         api（表现）+ service（业务）+ handler（异常出口）
                               + result / constant（宿主侧响应封套）

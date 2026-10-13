@@ -33,18 +33,27 @@ class Toolbox(Service):
 
     # ---------------------------------------------------------------- 注册
     def register(self, tool: Any) -> Any:
-        """注册一个工具（随调用方 fiber 卸载自动撤销）；同名直接顶替并记一次 revision。"""
+        """注册一个工具（随调用方 fiber 卸载自动撤销）；同名**顶替**，卸载时还原被顶替的那个。
+
+        顶替要能回退：插件可以"升级"一个内置工具（同名注册、行为是超集），卸载它就该回到
+        原来那个实现——否则撤掉插件的那一刻工具会凭空消失，而"注册即 effect"承诺的是
+        **回到注册前的状态**，不是"删掉这个名字"。
+        """
 
         def install() -> Callable[[], bool]:
+            previous = self._tools.get(tool.name)
             self._tools[tool.name] = tool
             self.revision += 1
 
             def withdraw() -> bool:
-                if self._tools.get(tool.name) is tool:
+                if self._tools.get(tool.name) is not tool:
+                    return False
+                if previous is not None:
+                    self._tools[tool.name] = previous
+                else:
                     del self._tools[tool.name]
-                    self.revision += 1
-                    return True
-                return False
+                self.revision += 1
+                return True
 
             return withdraw
 
