@@ -14,17 +14,18 @@
 | 装了什么 | FastAPI + SSE + 调试前端 + 桌面模式，一套配齐 | 保留图的编排与事件协议，应用形态交给插件 |
 | 往哪走 | 好用 | 通用、可插拔 |
 
-**内核提取已落地一部分**（阶段 A–D）：插件内核内联在 `app/kernel/`，装配层（`app/harness/`：
+**内核提取已落地一部分**（阶段 A–E）：插件内核内联在 `app/kernel/`，装配层（`app/harness/`：
 片段契约、合成器、版本、资产路由、节点壳）与八个内置插件（`loop` / `protocol` / `toolbox` /
 `compaction` / `approvals` / `context` / `exporters` / `webui`）都已就位，`container.py` 也从
-手工装配换成了内核 Context。**还没做**：`model` / `retry` / `store` / `sandbox` 这四个内置
-插件，插件发现与信任、热重载、agent 自改图；路线图的另外两件事（System-1 路由、自改进）也没开始。
+手工装配换成了内核 Context；插件发现与信任、热重载也做了（全局库 + 工作区库 + 按文件批准）。
+**还没做**：`model` / `retry` / `store` / `sandbox` 这四个内置插件、图版本审计表、agent 自改图；
+路线图的另外两件事（System-1 路由、自改进）也没开始。
 
 ## 目标形态：LangGraph 的执行图 × Cordis 的装配图
 
 内核 = **LangGraph 图工作流** × **插件思想（参考 [Cordis](https://github.com/cordiverse/cordis)）**。
-设计已部分落地（阶段 A–C）：装配层与 `loop` / `protocol` / `webui` 三个内置插件在代码里，
-插件发现与热插拔还没做——下面讲**目标形态与为什么**。
+设计已部分落地（阶段 A–E）：装配层与八个内置插件在代码里，两级插件库的发现、信任与热重载也在
+（见"插件库"一节）；**agent 自改图**还没做——下面讲**目标形态与为什么**。
 
 - **图工作流**是骨架：`stamp → [entry] → compact → [pre_model] → agent → [post_model]`，
   条件边在 `post_model` 之后分流——有工具走 `tools → [post_tools] → compact`，没有走 `[finish] → END`。
@@ -76,20 +77,21 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 
 ## 路线图
 
-方向先写清楚。**第 1 件进行中**（阶段 A–C：内核、装配层与三个内置插件已落地），另外两件还没开始。
+方向先写清楚。**第 1 件进行中**（阶段 A–E：内核、装配层、八个内置插件、插件发现与信任已落地），另外两件还没开始。
 
 ### 1. 插件化内核
 
 把「能力」和「装配」拆开：工具、技能、审批、压缩、存储各自成为一个插件，依赖靠声明而不是 import
 具体实现，生命周期跟着容器走（装上即生效、卸下即清理）。现在换一个实现要动装配根，之后只是换一个插件。
 
-**进度（阶段 A–D）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
+**进度（阶段 A–E）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
 （`app/harness/`：锚点插链、动态 schema、两段校验、版本与租约、节点壳与熔断、合成报告）；
 八个内置插件（骨架 `loop`、协议 `protocol`、工具箱 `toolbox`、压缩 `compaction`、
 审批 `approvals`、上下文 `context`、观测 `exporters`、前端 `webui`）；工具集可在**运行时**
 增删（下一次模型调用生效、不需要重建图）；`/ui` 改成表驱动的动态资产路由；容器换成
-Context 装配（必需插件缺了启动即失败）。**未做**：`model` / `retry` / `store` / `sandbox`
-四个内置插件，插件发现与信任（工作区 `.my_agent/plugins/`）、热重载、agent 自改图的工具。
+Context 装配（必需插件缺了启动即失败）；两级插件库的发现、按文件批准与热重载
+（`app/plugins/discover.py`：`.json` 纯声明片段 / `.py` 可编程插件，内容指纹轮询，回合边界换图）。
+**未做**：`model` / `retry` / `store` / `sandbox` 四个内置插件、图版本审计表、agent 自改图的工具。
 
 ### 2. 节点路由：Jev 类 System One 决策模型
 
@@ -162,6 +164,53 @@ cp .env.example .env
 | `SKILLS_DIR` | `~/.my_agent/skills` | 全局技能库；同时是沙箱的**受信只读根**（只读放行） |
 | `AGENTS_MD_ENABLED` | `1` | `0` 关掉 `AGENTS.md` / `CLAUDE.md` 注入 |
 | `AGENTS_ANCESTORS` | `1` | `0` 只读全局与工作区根，不向上遍历祖先目录 |
+| `PLUGINS_ENABLED` | `1` | 插件发现总开关；`0` 只装配内置插件（两级插件库都不扫） |
+| `PLUGINS_DIR` | `~/.my_agent/plugins` | 全局插件库：`.py`（可编程）/ `.json`（纯片段声明），**装载即信任** |
+| `PLUGINS_WORKSPACE` | 空 | 工作区插件所属的工作区；**留空 = 默认关**。填了才扫它的 `.my_agent/plugins/`，且每个文件要在 `<该工作区>/.my_agent/plugins.json` 的 `trusted` 里才装载 |
+| `PLUGIN_WATCH` | `1` | 内容指纹轮询热重载；`0` 只在启动时扫一次 |
+| `GRAPH_VERSIONS_KEEP` | `4` | 图版本账本保留几个历史版本（LRU，进行中的回合不回收） |
+
+**配置项由插件自己维护**（设计稿 §5.6）：压缩、上下文注入这些旋钮的**声明与默认值**在各自插件里
+（`Config` schema + `default_config()`），上面这些环境变量是它们的**默认值来源**——所以改 `.env`
+仍然"改一处"。装配时插件配置 = 默认值 + 用户覆盖 dict 的合并（覆盖层留给将来的设置界面）；
+纯插件配置项（例如 `builtin/approvals` 的 `required`）不进根配置，就地在该插件的说明里。
+加新插件时，它的可配置项由它自己做插件时声明，不动 `app/config`。
+
+## 插件库（发现、信任、热重载）
+
+图的结构不再写死在代码里：**内置插件给骨架，插件库给片段**。两级来源：
+
+| 来源 | 位置 | 信任 |
+| --- | --- | --- |
+| 全局库 | `PLUGINS_DIR`（默认 `~/.my_agent/plugins`） | **装载即信任**（是你自己的目录） |
+| 工作区库 | `<PLUGINS_WORKSPACE>/.my_agent/plugins/` | **默认关**；每个文件要出现在 `<工作区>/.my_agent/plugins.json` 的 `trusted` 里才装载 |
+
+两种形态，都是**一个文件一个插件**（`_` 开头的是作者辅助文件，不当插件）：
+
+- **`.json`（纯声明片段）**：只描述"往哪个锚点挂一条链"，节点必须声明 `interface`（实现由服务给，
+  数据不执行代码）。形状：
+
+  ```json
+  {"id": "workspace/research", "anchor": "pre_model",
+   "chain": [{"name": "notes", "interface": "research", "reads": ["messages"]}]}
+  ```
+
+- **`.py`（可编程插件）**：`plugin = {"apply": apply, "name": "..."}`，在 `apply(ctx)` 里
+  `ctx.provide(...)` / `ctx.structure.contribute(...)`。**装载即执行代码**，所以工作区那份必须先批准；
+  源码直读编译（不走 import 缓存），改完就能热重载。
+
+行为要点：
+
+- **写文件 ≠ 生效**：agent 能往库里写片段（阶段 F 的自改图就是这么做的），但没进授权清单就不会被装载
+  ——写与信任是两件事；批准清单本身在沙箱里是硬阻断区（读写都拒、永不提示）。
+- **改文件不改运行图**：增/删/改只改"结构来源"，图在**下一个回合边界**才换；在飞回合照旧跑旧版本。
+  合成失败保留旧版本并记警告——结构出错的插件不该带走正在跑的会话。
+- **热重载**：`PLUGIN_WATCH=1`（默认）按**内容指纹**轮询（1 秒一次）；改内容、删文件都看得见，
+  只 touch 不改内容不会白重载；置 `0` 只在启动时扫一次。
+- **坏文件只点名**：JSON 语法错、接口没有实现的片段**挡在装载口**并在日志里按文件名报出来
+  （`INTERFACE_MISSING`），其余插件照常装载。
+- **会话归属**：现在只认**一个**"插件工作区"（`PLUGINS_WORKSPACE`）。不同会话工作区各自一套插件与版本
+  还没做，等有真实需求再动。
 
 ## 启动
 
@@ -607,6 +656,9 @@ app/container.py  装配根      一串 ctx.plugin(...) + 服务注册；必需�
 | 要改什么 | 改哪里 |
 | --- | --- |
 | 加工具 | `app/agent/tools/` 下新建文件，在 `__init__.py` 的 `TOOLS` 里注册 |
+| 给插件加可配置项 | 在**插件自己**的 `Config` + `default_config()` 里加；只有它也要暴露成 `.env` 全局项时，才同步 `app/config` + `.env.example` + 本表三处 |
+| 加一条图内链（不改代码） | 写一个 `.json` 片段声明放进插件库（全局库直接生效；工作区库还要进 `<工作区>/.my_agent/plugins.json` 的 `trusted`），见"插件库"一节 |
+| 加可编程插件 | 插件库里放 `.py`：`plugin = {"apply": apply, "name": "..."}`；信任规则同上 |
 | 加技能 | `<工作区>/.my_agent/skills/<名字>/SKILL.md`，或全局库 `~/.my_agent/skills`；**不用改代码** |
 | 加项目约定 | 工作区（或任一祖先目录）放 `AGENTS.md`；同目录要覆盖它就用 `AGENTS.override.md` |
 | 加需审批的工具 | 装配时给 `builtin/approvals` 传 `{"required": ["bash"]}`（即时生效） |
