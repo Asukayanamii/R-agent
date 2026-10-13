@@ -176,6 +176,63 @@ async def test_workspace_python_plugin_needs_approval(tmp_path):
 # ------------------------------------------------------------------ 热重载
 
 
+async def test_concurrent_scans_load_a_file_once(tmp_path):
+    """批准（立刻扫一次）与轮询任务会并发扫同一个目录：同一个新文件只能装载一次。
+
+    不加锁时两边都过了"还没装载"的判断 → 装载两次：第二次撞 `FRAGMENT_DUPLICATE`（白噪音），
+    万一两次都成功还会留下一个没人认领的 fiber。
+    """
+    runtime = await make_runtime_with_impl()
+    write_plugin(plugins_dir(tmp_path))
+    approve(tmp_path, 'research.json')
+    discovery = PluginDiscovery(runtime.ctx, global_dir=None, workspace=tmp_path, watch=False)
+
+    first, second = await asyncio.gather(discovery.scan(), discovery.scan())
+
+    loaded = [item for report in (first, second) for item in report.loaded]
+    assert loaded == ['research.json（工作区）']
+    assert not first.failed and not second.failed
+    await begin_turn(runtime)
+    assert fragment_ids(runtime) == ['builtin/loop', 'workspace/research']
+
+
+async def test_broken_file_is_not_retried_every_scan(tmp_path):
+    """坏文件不每秒重试：同一份内容在冷却期内跳过（改内容立刻重试）——否则每秒一条 ERROR 堆栈。"""
+    runtime = await make_runtime_with_impl()
+    write_plugin(
+        plugins_dir(tmp_path),
+        {
+            'id': 'workspace/broken',
+            'anchor': 'pre_model',
+            'chain': [{'name': 'broken_node', 'interface': 'no_such_service'}],
+        },
+        name='broken.json',
+    )
+    approve(tmp_path, 'broken.json')
+    discovery = PluginDiscovery(runtime.ctx, global_dir=None, workspace=tmp_path, watch=False)
+
+    first = await discovery.scan()
+    second = await discovery.scan()  # 同一份内容：冷却期内不再重试、也不再报
+
+    assert [name for name, _ in first.failed] == ['broken.json']
+    assert second.failed == []
+
+    # 改了内容就立刻重试（这次给它一个存在的服务，应当装载成功）
+    write_plugin(
+        plugins_dir(tmp_path),
+        {
+            'id': 'workspace/broken',
+            'anchor': 'pre_model',
+            'chain': [{'name': 'broken_node', 'interface': 'research'}],
+        },
+        name='broken.json',
+    )
+    third = await discovery.scan()
+
+    assert third.failed == []
+    assert third.loaded == ['broken.json（工作区）']
+
+
 async def test_watch_loop_reverts_after_file_removal(tmp_path):
     """热重载：轮询看得见删除，结构来源自动撤销；图在下一个回合边界回到原样。"""
     runtime = await make_runtime_with_impl()

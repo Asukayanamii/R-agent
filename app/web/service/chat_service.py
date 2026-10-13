@@ -135,12 +135,12 @@ class ChatService:
             fixed = await self._runner.repair_after_abort(thread_id)
             logger.info("会话有悬空调用，补 %d 条后继续 thread=%s", fixed, thread_id)
 
-        workspace = await self._workspace(thread_id)
+        workspace = await self._scope_workspace(thread_id)
         logger.info(
             "对话开始 thread=%s 消息=%d 字 工作区=%s",
             thread_id,
             len(message),
-            workspace or "应用目录",
+            workspace,
         )
         try:
             async for event in self._runner.stream(
@@ -153,12 +153,12 @@ class ChatService:
         await self._record(thread_id, title=title)
 
     async def resume(self, thread_id: str, value: str) -> AsyncIterator[BaseModel]:
-        workspace = await self._workspace(thread_id)
+        workspace = await self._scope_workspace(thread_id)
         logger.info(
             "继续对话 thread=%s 选择=%s 工作区=%s",
             thread_id,
             value,
-            workspace or "应用目录",
+            workspace,
         )
         try:
             async for event in self._runner.resume(
@@ -191,8 +191,16 @@ class ChatService:
             logger.exception("中断后的收尾失败 thread=%s", thread_id)
 
     async def _workspace(self, thread_id: str) -> str | None:
-        """该会话的工作区。没绑过则返回 None，由沙箱退回应用所在目录。"""
+        """该会话绑定的工作区；没绑过返回 None（调用方按"应用目录"处理）。"""
         return await self._workspaces.for_thread(thread_id) or None
+
+    async def _scope_workspace(self, thread_id: str) -> str:
+        """交给 runner 的工作区：**没绑过就退回应用所在目录**（与沙箱、索引同一条规则）。
+
+        不留 None：'没有工作区'在别处本来就不存在（沙箱按应用目录兜底），显式化之后
+        插件作用域与工具落点才是同一个地方——否则 agent 往应用目录写插件、自己的会话却看不见。
+        """
+        return await self._workspaces.for_thread(thread_id) or str(PROJECT_ROOT)
 
     def browse(self, path: str) -> BrowseResponse:
         """

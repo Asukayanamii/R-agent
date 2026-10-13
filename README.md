@@ -172,6 +172,7 @@ cp .env.example .env
 | `PLUGINS_DIR` | `~/.my_agent/plugins` | 全局插件库：`.py`（可编程）/ `.json`（纯片段声明），**装载即信任** |
 | `PLUGINS_WORKSPACE` | `0` | 工作区插件库开关：`1` = 每个会话按**自己的工作区**各扫一份（作用域隔离：A 批准的插件不影响 B 的会话），每个文件要在 `<该工作区>/.my_agent/plugins.json` 的 `trusted` 里才装载 |
 | `PLUGIN_WATCH` | `1` | 内容指纹轮询热重载；`0` 只在启动时扫一次 |
+| `PLUGIN_AUTHOR_INSTALL` | `0` | 允许 agent 用 `install_plugin` 写 `.py`（**等于执行任意代码**，仍要过确认卡）；`add_fragment` 不受它影响 |
 | `GRAPH_VERSIONS_KEEP` | `4` | 图版本账本保留几个历史版本（LRU，进行中的回合不回收） |
 
 **配置项由插件自己维护**（设计稿 §5.6）：压缩、上下文注入这些旋钮的**声明与默认值**在各自插件里

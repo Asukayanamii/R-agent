@@ -276,8 +276,12 @@ class HarnessRuntime:
             and self._composed_circuit.get(scope, -1) == self.failures.revision
         ):
             return False
-        circuit_changed = self._composed_circuit.get(scope, -1) != self.failures.revision
-        await self.recompose(reason='熔断' if circuit_changed else '结构变化', scope=scope)
+        # 没记过（新作用域第一次合成）按"没变"算：默认值取当前熔断版本号，别把首合成误报成熔断
+        composed_circuit = self._composed_circuit.get(scope, self.failures.revision)
+        await self.recompose(
+            reason='熔断' if composed_circuit != self.failures.revision else '结构变化',
+            scope=scope,
+        )
         return True
 
     # ---------------------------------------------------------------- 租约

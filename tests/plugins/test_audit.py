@@ -87,6 +87,17 @@ async def test_circuit_break_is_audited(tmp_path):
     await dao.close()
 
 
+async def test_first_compose_of_a_new_scope_is_a_structure_change(tmp_path):
+    """新作用域的**首次**合成不是熔断：审计的 reason 不能把"没记过"当"熔断名单变了"。"""
+    runtime, dao = await make_audited(tmp_path)
+
+    await runtime.maybe_recompose(scope='scope-x')
+
+    rows = await dao.recent('scope-x')
+    assert rows and rows[0]['reason'] == '结构变化'
+    await dao.close()
+
+
 async def test_audit_failure_does_not_break_compose(tmp_path):
     """审计回调抛错只记 WARNING：装配照常，版本照常生效。"""
     ctx = Context()

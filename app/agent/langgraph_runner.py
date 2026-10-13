@@ -123,10 +123,14 @@ class LangGraphRunner:
                     data=ErrorData(message="该会话没有待确认的操作，无需 resume")
                 )
                 return
-            # 兼容判定：待确认中断所在节点必须在当前版本里。结构换过以后，把一个已经
-            # 不在图里的位置接着跑只会得到含糊的报错——这里停下来把话说明白。
+            # 兼容判定：待确认中断所在节点必须在**即将 resume 进去的那版图**里。结构换过以后，
+            # 把一个已经不在图里的位置接着跑只会得到含糊的报错——这里停下来把话说明白。
+            #
+            # 判定必须对着 `version`（租约已经做完作用域规范化并应用了 pending），**不能**拿原始
+            # 工作区字符串去查账本：工作区还没有自己的插件库时，lease 里的作用域是全局 `''`，
+            # 而按原始字符串查会命中一个刚建的空账本，任何节点都会被判成"不在图里"。
             interrupted = [task.name for task in snapshot.tasks if task.interrupts]
-            missing = self.runtime.registry(workspace or '').missing_nodes(interrupted)
+            missing = sorted(set(interrupted) - set(version.node_names))
             if missing:
                 yield ErrorEvent(
                     data=ErrorData(

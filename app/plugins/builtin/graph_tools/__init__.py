@@ -96,6 +96,16 @@ def _normalized(name: str, declaration: str, ctx: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
 
 
+def default_config() -> dict:
+    """默认值引用总体配置（`.env`）：`PLUGIN_AUTHOR_INSTALL` 默认关。
+
+    写 `.py` 等于执行任意代码，所以默认不许；数据形态的片段（`add_fragment`）不受它影响。
+    """
+    from app.common import config
+
+    return {'enabled': True, 'allow_install_plugin': config.PLUGIN_AUTHOR_INSTALL}
+
+
 class GraphTools(Service):
     """服务 ``graph_tools``：三个工具本体（装配时注册进服务 `tools`）。"""
 

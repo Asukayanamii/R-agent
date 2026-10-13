@@ -241,3 +241,34 @@ async def test_inspect_graph_reads_the_current_picture(tmp_path):
     assert 'builtin/loop' in payload['report']['participants']
     assert payload['spec']['fragments'][0]['id'] == 'builtin/loop'
     assert isinstance(payload['recent'], list)
+
+
+async def test_resume_works_before_the_scope_exists(tmp_path):
+    """真应用里抓到的 bug：中断发生在**全局作用域**（这个工作区还没有自己的插件库）时，
+    resume 的兼容判定不能拿"原始工作区字符串"去查账本——那会命中一个刚建的空账本，
+    把任何节点都判成"不在当前运行图里"。"""
+    from app.plugins.builtin import protocol as protocol_plugin
+
+    script = [
+        call('add_fragment', {'name': 'probe_notes', 'declaration': DECLARATION}),
+        AIMessage(content='加好了', usage_metadata=USAGE),
+    ]
+    runtime, libraries, workspace = await make_wired(tmp_path, script)
+    await runtime.ctx.plugin(protocol_plugin.plugin, essential=True)
+
+    from app.agent.langgraph_runner import LangGraphRunner
+
+    runner = LangGraphRunner(runtime, runtime.ctx.get('protocol'))
+    frames = [
+        item
+        async for item in runner.stream('t1', '加一条链', workspace=str(workspace))
+    ]
+    assert any(item.type == 'interrupt' for item in frames)
+
+    frames = [
+        item
+        async for item in runner.resume('t1', '确认', workspace=str(workspace))
+    ]
+
+    assert not any(item.type == 'error' for item in frames), [item.model_dump() for item in frames]
+    assert trusted_files(workspace) == {'probe_notes.json'}

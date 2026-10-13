@@ -163,6 +163,15 @@ PLUGINS_WORKSPACE = os.getenv("PLUGINS_WORKSPACE", "0").strip() in ("1", "true",
 # 置 0 关掉：插件只在启动时扫一次。
 PLUGIN_WATCH = os.getenv("PLUGIN_WATCH", "1").strip() != "0"
 
+# 允许 agent 用 `install_plugin` 往工作区插件库写 `.py`（**等于执行任意代码**）：默认关。
+# 开了之后它仍然要过人工确认卡，且只在工作区插件库启用（PLUGINS_WORKSPACE=1）时才有意义。
+# 数据形态的片段（`add_fragment`）不受这个开关影响——那个不执行代码。
+PLUGIN_AUTHOR_INSTALL = os.getenv("PLUGIN_AUTHOR_INSTALL", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 # 图版本账本保留几个历史版本（LRU）；无在飞租约、未超此数的旧版本可回收。
 GRAPH_VERSIONS_KEEP = _int_or(os.getenv("GRAPH_VERSIONS_KEEP", "").strip(), 4)
 

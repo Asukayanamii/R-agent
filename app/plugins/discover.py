@@ -29,6 +29,7 @@ import os
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable
 
 from app.harness.composer import PLUGIN_SCOPE
@@ -47,6 +48,9 @@ SOURCE_WORKSPACE = '工作区'
 
 MAX_WORKSPACES = 8
 """同时保留几个工作区的插件库（LRU 卸载最久没用的那个）。与 `runtime.MAX_SCOPES` 同一数量级。"""
+
+RETRY_COOLDOWN = 5.0
+"""装载失败后、内容没变时的重试冷却（秒）。见 `_cooling`。"""
 
 
 def trust_path(workspace: str | Path) -> Path:
@@ -138,6 +142,11 @@ class PluginDiscovery:
         self.watch = watch
         self.interval = interval
         self._loaded: dict[Path, tuple[Any, str]] = {}
+        self._failures: dict[Path, tuple[str, float]] = {}
+        """最近一次失败：(内容指纹, 时间)。同一份内容在冷却期内不重试——坏文件不该每秒刷屏。"""
+        self._lock = asyncio.Lock()
+        """扫描互斥：`trust()`（批准即装载）与轮询任务会并发扫同一个目录，
+        不加锁就会同一个新文件被装载两次（第二次撞 FRAGMENT_DUPLICATE，白噪音）。"""
         self.last_report = DiscoveryReport()
 
     @property
@@ -155,11 +164,15 @@ class PluginDiscovery:
         return report
 
     async def scan(self) -> DiscoveryReport:
-        """扫一遍：增/删/改都处理，没变就什么都不做。
+        """扫一遍：增/删/改都处理，没变就什么都不做（**互斥**：并发扫描串行化）。
 
         装载失败的文件不进 `_loaded`，所以**每次扫描都会重试**——它等的服务可能下一轮才到
         （比如实现来自同目录的可编程插件）。
         """
+        async with self._lock:
+            return await self._scan()
+
+    async def _scan(self) -> DiscoveryReport:
         report = DiscoveryReport()
         desired = self._desired(report)
 
@@ -171,6 +184,8 @@ class PluginDiscovery:
             current = self._loaded.get(path)
             if current is not None and current[1] == fingerprint:
                 continue
+            if self._cooling(path, fingerprint):
+                continue  # 同一份内容刚失败过：先放一放（改内容或过冷却期再试）
             if current is not None:
                 await self._unload(path, report)  # 文件变了：先摘旧的再装新的
             await self._load(path, source, fingerprint, report)
@@ -226,16 +241,29 @@ class PluginDiscovery:
 
     # ------------------------------------------------------------------ 装载
 
+    def _cooling(self, path: Path, fingerprint: str) -> bool:
+        """这份内容刚失败过、还在冷却期里吗？
+
+        重试是故意的（片段等的服务可能下一轮才到），但**不能每秒重试**：坏文件的异常会
+        每秒刷一条 ERROR 堆栈。改内容（指纹变了）立刻重试；没改就等冷却期过。
+        """
+        failed = self._failures.get(path)
+        if failed is None or failed[0] != fingerprint:
+            return False
+        return monotonic() - failed[1] < RETRY_COOLDOWN
+
     async def _load(
         self, path: Path, source: str, fingerprint: str, report: DiscoveryReport
     ) -> None:
         try:
             plugin, config = self._compile(path)
         except StructureError as error:
+            self._failures[path] = (fingerprint, monotonic())
             report.failed.append((path.name, f'{error.code}: {error}'))
             logger.warning('插件未装载 %s（%s）', path.name, error)
             return
         except Exception as error:  # noqa: BLE001 - 一个坏文件不该拖垮发现器
+            self._failures[path] = (fingerprint, monotonic())
             report.failed.append((path.name, f'{type(error).__name__}: {error}'))
             logger.warning('插件未装载 %s：%s', path.name, error)
             return
@@ -246,10 +274,12 @@ class PluginDiscovery:
         try:
             await fiber
         except Exception as error:  # noqa: BLE001 - 同上
+            self._failures[path] = (fingerprint, monotonic())
             report.failed.append((path.name, f'{type(error).__name__}: {error}'))
             logger.warning('插件装载失败 %s：%s', path.name, error)
             return
 
+        self._failures.pop(path, None)
         self._loaded[path] = (fiber, fingerprint)
         report.loaded.append(f'{path.name}（{source}）')
         logger.info('插件已装载 %s（%s）', path.name, source)
