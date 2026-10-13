@@ -14,19 +14,26 @@
 | 装了什么 | FastAPI + SSE + 调试前端 + 桌面模式，一套配齐 | 保留图的编排与事件协议，应用形态交给插件 |
 | 往哪走 | 好用 | 通用、可插拔 |
 
-**代码目前与上游一致**：能跑的东西、行为、约定全都相同——内核化是**接下来要做的事**，
-不是已经做完的成果；「路线图」里的三件事，代码里一行都还没有。
+**内核提取已落地一部分**（阶段 A–C）：插件内核内联在 `app/kernel/`，装配层（`app/harness/`：
+片段契约、合成器、版本、资产路由）与三个内置插件（`loop` / `protocol` / `webui`）都已就位，
+`container.py` 也从手工装配换成了内核 Context。**还没做**：其余内置插件（工具 / 压缩 / 审批 /
+上下文 / 模型 / 存储 / 沙箱）、插件发现与信任、热重载、agent 自改图；路线图的另外两件事
+（System-1 路由、自改进）也没开始。
 
 ## 目标形态：LangGraph 的执行图 × Cordis 的装配图
 
 内核 = **LangGraph 图工作流** × **插件思想（参考 [Cordis](https://github.com/cordiverse/cordis)）**。
-下面是设计，**代码里还没有**——现状见「路线图」之后的章节。
+设计已部分落地（阶段 A–C）：装配层与 `loop` / `protocol` / `webui` 三个内置插件在代码里，
+插件发现与热插拔还没做——下面讲**目标形态与为什么**。
 
-- **图工作流**是骨架：`compact → agent ⇄ tools`，节点少、边明确，每轮都从压缩检查开始
-  （见 `docs/graph.mmd`，由合成器导出：`python -m app.harness`）。这一层不动。
+- **图工作流**是骨架：`stamp → [entry] → compact → [pre_model] → agent → [post_model]`，
+  条件边在 `post_model` 之后分流——有工具走 `tools → [post_tools] → compact`，没有走 `[finish] → END`。
+  方括号是**透传锚点**：空着就是空操作节点，挂上片段就把它的出边改接到链尾（见 `docs/graph.mmd`，
+  由合成器导出：`python -m app.harness`）。
 - **插件思想**是长法：照 Cordis 那套取舍——**一切皆插件、依赖靠声明、有明确生命周期、可热插拔**。
-  这边对应的是工具、技能、审批策略、压缩策略、存储、事件出口；它们现在都硬编码在
-  `app/container.py` 这个装配根里，插件化之后应当能各自装上卸下，而不是改框架代码。
+  这边对应的是工具、技能、审批策略、压缩策略、存储、事件出口；目前 `loop`（骨架）、`protocol`
+  （事件形状与 SSE 编码）、`webui`（前端资产）已经是同级插件，其余还硬编码在 `app/container.py`
+  这个装配根里，插件化之后应当能各自装上卸下，而不是改框架代码。
 
 ### 两块拼图各缺一半
 
@@ -48,7 +55,7 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 | 卸下即撤销、不留残留 | Cordis | effect 逆序释放 |
 | **正在跑的那一轮**怎么办 | LangGraph | 回合边界切换 + 版本钉住：进行中的回合跑完旧版本，新回合用新结构 |
 | 停在待确认上、重启后还能点确认 | LangGraph | 检查点 + `interrupt` / `Command(resume=...)` |
-| 改完结构，旧会话还能接着聊 | LangGraph | 结构声明默认**展平**合成：节点名、通道名都不变，新增通道对旧检查点安全 |
+| 改完结构，旧会话还能接着聊 | **已放弃** | 不做兼容承诺：结构变更后旧会话可弃、需要就新开。展平合成下实测能继续跑（阶段 0 探针 3），但那不再是需求，也不为此设约束 |
 
 一句话：**LangGraph 管执行图（状态怎么流、走到哪、停在谁身上），Cordis 管装配图（能力从哪来、
 依赖谁、怎么撤销）；两者之间的接缝是"结构声明"（数据），不是互相调用。**
@@ -69,12 +76,19 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 
 ## 路线图
 
-方向先写清楚，**三件都还没实现**。
+方向先写清楚。**第 1 件进行中**（阶段 A–C：内核、装配层与三个内置插件已落地），另外两件还没开始。
 
 ### 1. 插件化内核
 
 把「能力」和「装配」拆开：工具、技能、审批、压缩、存储各自成为一个插件，依赖靠声明而不是 import
 具体实现，生命周期跟着容器走（装上即生效、卸下即清理）。现在换一个实现要动装配根，之后只是换一个插件。
+
+**进度（阶段 A–C）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
+（`app/harness/`：锚点插链、动态 schema、两段校验、版本与租约）；骨架 `loop`、协议 `protocol`、
+前端 `webui` 三个内置插件；`/ui` 改成表驱动的动态资产路由（卸下插件即 404，`/chat/*` 照常）；
+容器换成 Context 装配（必需插件缺了启动即失败）。**未做**：toolbox / compaction / approvals /
+context / exporters / model / retry / store / sandbox 这些内置插件，插件发现与信任
+（工作区 `.my_agent/plugins/`）、热重载、agent 自改图的工具。
 
 ### 2. 节点路由：Jev 类 System One 决策模型
 
@@ -174,7 +188,7 @@ python -m uvicorn app.main:app --reload --port 8000
 
 非流式接口走 `Result` 包装（`{code, message, data}`，`code=0` 为成功）。
 
-**异常有两个出口，各自兜住全部异常**：流式在 `app/event/stream.py` 补一帧 `error` + `done`，
+**异常有两个出口，各自兜住全部异常**：流式在 `builtin/protocol` 的编码层补一帧 `error` + `done`，
 非流式由 `app/handler/` 的全局处理器包成 500 + `Result`。两边都返回异常原文（堆栈只进服务端日志），
 所以上游（模型服务、数据库）出错既不会带走进程，前端也总能拿到明确的结束标记。
 
@@ -214,7 +228,7 @@ python -m uvicorn app.main:app --reload --port 8000
 | `done` | 流结束，必为最后一帧 |
 
 前端只需 `switch (type)`，**未知 type 静默忽略**，后端新增事件不会影响已上线前端。
-`error` 与 `done` 由 `app/event/stream.py` 统一收口，实现类无需产出。
+`error` 与 `done` 由 `builtin/protocol` 的编码层统一收口，实现类无需产出。
 
 两个前端实现时要知道的约定：**多调用时中断逐个出现**，每次 `resume` 解决一个、
 响应里会带出下一个 `interrupt`；**同一节点的多个 interrupt 复用同一个 id**，
@@ -465,7 +479,7 @@ agent → tools（审批 + 执行） → agent
 
 ## 调试页面
 
-`app/static/index.html`，布局参考 Open WebUI：左侧会话列表**先按工作区、再按今天/昨天/更早**
+`app/plugins/builtin/webui/static/index.html`，布局参考 Open WebUI：左侧会话列表**先按工作区、再按今天/昨天/更早**
 两层分组（组头可折叠，悬停露出「在此工作区新建」）、助手消息带头像无气泡、
 用户消息右侧气泡（24px 圆角，与 Open WebUI 的 `rounded-3xl` 一致）、
 底部圆角输入框。支持流式渲染、markdown、工具卡片折叠、人工确认卡片、工作区切换
@@ -477,8 +491,9 @@ agent → tools（审批 + 执行） → agent
 
 主题令牌集中在 CSS 顶部的 `:root[data-theme=...]`，换皮只改那一层。
 
-> 浏览器端与桌面端是**同一个文件**。`app/main.py` 把 `app/static` 挂在 `/ui`，
-> `app/desktop.py` 的窗口也加载同一个地址，改一处两边同时生效。
+> 浏览器端与桌面端是**同一个文件**。`builtin/webui` 插件把它的 static 目录挂到 `/ui`
+> （表驱动的一条动态路由，装卸只改表），`app/desktop.py` 的窗口也加载同一个地址。
+> **换个前端 = 换一份 webui 插件目录**；卸下这个插件，`/ui` 立即 404 而 `/chat/*` 照常。
 
 ## 桌面模式
 
@@ -515,9 +530,14 @@ app/api/          表现层      HTTP、请求体校验、SSE 外壳
 app/service/      业务层      编排 Agent 执行、维护会话索引与工作区
      ↓
 app/dao/          数据访问层  只读写自有表：thread_index / workspace / thread_workspace
-app/agent/        Agent 运行时 图定义、事件映射、沙箱、工具
+app/agent/        Agent 运行时 节点实现、沙箱、工具（不 import kernel/harness）
      ↓
 app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换用
+
+app/kernel/       插件内核    内联的 Cordis 版内核（不依赖 app.*，整体可搬走）
+app/harness/      装配层      片段契约 → 合成器 → 版本；租约；资产表与动态路由
+app/plugins/      插件        builtin/loop（骨架）、builtin/protocol（wire 形状 + SSE）、builtin/webui（前端）
+app/container.py  装配根      一串 ctx.plugin(...) + 服务注册；必需插件缺了启动即失败
 ```
 
 `app/agent/` 内部按**关注点**分文件——一个模块名说清一件事，别再往 `langgraph_runner.py` 里塞：
@@ -525,7 +545,6 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 | 文件 | 放什么 |
 | --- | --- |
 | `nodes.py` | 图节点实现（模型调用 / 压缩检查）与 superstep 上限 |
-| `stream.py` | LangGraph 事件 → 项目事件协议（`translate_events`） |
 | `langgraph_runner.py` | 门面：实现 `AgentRunner` 协议的 `LangGraphRunner`，不写业务逻辑 |
 | `tool_calls.py` | 工具执行：人工审批、并行调用、失败与中断收口 |
 | `compaction/` | 上下文压缩（`policy` 纯逻辑 / `runtime` 接进图） |
@@ -538,20 +557,20 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 | `runner.py` | `AgentRunner` 协议与 `StubRunner` |
 | `sandbox.py` / `runtime.py` / `tools/` | 沙箱、工作区 ContextVar、工具本体（`tools/diff.py` 只负责 edit 的差异数据） |
 
-- `app/container.py` 是**组装根**：选哪个实现、连接何时开关，都属于应用装配
-- `app/handler/` 是**全局异常处理**：非流式那半边的兜底出口（流式在 `app/event/stream.py`）
-- `app/event/` 是**协议模型**（wire format）：前端能看见的一切形状。判据只有一条——
-  **要不要跨 HTTP 边界**：要 → 这里是 pydantic，供 OpenAPI；只在层间流转 → 放 `app/models/`，
-  dataclass 不带校验。agent 层直接产出数据面事件，业务层把实体映射成列表项与回执，
-  表现层只负责包 `Result`；**dao 不 import 它**（存储层不该知道协议）。
-  请求体是入站的 HTTP 校验，留在 api 层，不进 `app/event/`
+- `app/container.py` 是**组装根**：一串 `ctx.plugin(...)`（必需项标 `essential=True`）+ 服务注册；
+  选哪个实现、连接何时开关，都属于应用装配
+- `app/handler/` 是**全局异常处理**：非流式那半边的兜底出口（流式的在 `builtin/protocol`）
+- `plugins/builtin/protocol/` 是**协议模型**（wire format）：前端能看见的一切形状与 SSE 编码。判据只有一条——
+  **要不要跨 HTTP 边界**：要 → 这里（以及 `app/api` 的返回注解）是 pydantic，供 OpenAPI；只在层间流转 →
+  放 `app/models/`，dataclass 不带校验。业务层把实体映射成列表项与回执，表现层只负责包 `Result`；
+  **dao 不 import 它**（存储层不该知道协议）。请求体是入站的 HTTP 校验，留在 api 层
 - `app/exceptions/` 放自定义异常（`SandboxDenied`、`InvalidInput`）
 - checkpointer **不单独抽 DAO**：那是 LangGraph 自己的存储，不是我们写的 SQL
 
 **`app/` 下每个关注点都是一级包**，不放散落的同名模块——`app/config/`、`app/result/`、
 `app/constant/` 都一样。包内的模块名**别和包同名**，否则会出现 `app.exceptions.exceptions`
 这种双重叠词；所以"默认名字必然等于包名"的那几个（`config`、`exceptions`、`handler`）直接把
-代码写在 `__init__.py` 里，其余一律具名模块（`api/chat.py`、`event/events.py`、`dao/workspace_dao.py`）。
+代码写在 `__init__.py` 里，其余一律具名模块（`api/chat.py`、`harness/composer.py`、`dao/workspace_dao.py`）。
 
 > `app/config/__init__.py` 的 `PROJECT_ROOT` 是**按目录层级数出来的**，挪文件必须同步改。
 > 它算错不会报错，只会让相对路径的配置静默写到别处去，所以那里有启动断言兜底。
@@ -586,5 +605,5 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 | 加需审批的工具 | 把工具名加进同文件的 `APPROVAL_REQUIRED` |
 | 换存储 | `app/container.py` 里换 checkpointer |
 | 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在容器里替换 |
-| 换事件类型 | `app/event/events.py`，前端同步加一个 `case` |
-| 换前端 | `app/static/index.html` 可整体替换，事件处理逻辑可直接移植到 Next.js |
+| 换事件类型 | `app/plugins/builtin/protocol/events.py`（并 bump 协议版本），前端同步加一个 `case` |
+| 换前端 | `app/plugins/builtin/webui/static/` 可整体替换（或换一份 webui 插件），事件处理逻辑可直接移植到 Next.js |
