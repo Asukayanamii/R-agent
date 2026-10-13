@@ -290,6 +290,65 @@ async def test_python_plugin_uses_its_default_config(tmp_path):
     assert runtime.ctx.get('greeter_b').greeting == 'schema-default'
 
 
+async def test_plugin_inventory_tells_what_is_going_on(tmp_path):
+    """清单回答"我有哪些插件、谁没生效、为什么"。
+
+    三个来源在一张表里（内置 / 全局库 / 工作区库），每行都有状态；没生效的要给出原因——
+    这是"只加工具、只挂资产的插件在图里看不见"的补位。
+    """
+    from app.plugins.discover import PluginLibraries, write_trust
+
+    runtime = await make_runtime_with_impl()
+    ctx = runtime.ctx  # 片段要 `structure` 服务——它由 runtime 提供，所以库建在同一个 ctx 上
+    await ctx.plugin({'apply': lambda ctx: None, 'name': 'builtin/pretend'})
+
+    global_dir = tmp_path / 'global'
+    global_dir.mkdir()
+    (global_dir / 'marker.py').write_text(
+        'def apply(ctx):\n    pass\n\n\nplugin = {"apply": apply, "name": "deploy/marker"}\n',
+        encoding='utf-8',
+    )
+
+    workspace = tmp_path / 'ws'
+    plugins = workspace / '.my_agent' / 'plugins'
+    plugins.mkdir(parents=True)
+    good = {
+        'id': 'workspace/good',
+        'anchor': 'pre_model',
+        'chain': [{'name': 'good_node', 'interface': 'research'}],
+    }
+    write_plugin(plugins, good, name='good.json')
+    write_plugin(
+        plugins,
+        {
+            'id': 'workspace/untouched',
+            'anchor': 'pre_model',
+            'chain': [{'name': 'untouched_node', 'interface': 'research'}],
+        },
+        name='untouched.json',
+    )
+    (plugins / 'boom.py').write_text('raise RuntimeError("故意炸")\n', encoding='utf-8')
+    # 只批准两个：untouched.json 故意不写进信任清单 → 清单里应当是"待批准"
+    write_trust(workspace, {'good.json', 'boom.py'})
+
+    libraries = PluginLibraries(ctx, global_dir=global_dir, workspace_enabled=True, watch=False)
+    await libraries.start()
+    await libraries.ensure(str(workspace))
+
+    rows = libraries.inventory(str(workspace))
+    by_file = {row.get('file'): row for row in rows}
+
+    assert by_file['marker.py']['source'] == '全局'
+    assert by_file['marker.py']['state'] == 'ACTIVE'
+    assert by_file['good.json']['source'] == '工作区'
+    assert by_file['good.json']['state'] == 'ACTIVE'
+    assert by_file['untouched.json']['state'] == '待批准'
+    assert '信任清单' in by_file['untouched.json']['reason']
+    assert by_file['boom.py']['state'] == 'FAILED'
+    assert '故意炸' in by_file['boom.py']['reason']
+    assert any(row['name'] == 'builtin/pretend' and row['source'] == '内置' for row in rows)
+
+
 async def test_python_plugin_may_take_only_ctx(tmp_path):
     """`def apply(ctx)` 也得能装——内核按签名传参（`call_plugin`），装载包装层不能绕过。
 

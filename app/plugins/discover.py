@@ -173,6 +173,78 @@ class PluginDiscovery:
         async with self._lock:
             return await self._scan()
 
+    def fibers(self) -> list[Any]:
+        """当前装着的那批 fiber（内部用：清单里把"库里的"与"内置的"分开）。"""
+        return [fiber for fiber, _ in self._loaded.values()]
+
+    def directory(self) -> Path | None:
+        """这个库的目录：全局库就是 `global_dir`，工作区库是 `<工作区>/.my_agent/plugins`。"""
+        return self.global_dir if self.global_dir is not None else self._workspace_dir()
+
+    async def reload_file(self, path: Path) -> DiscoveryReport:
+        """强制重读一个文件（内容指纹没变也重来）。
+
+        用途是"我改了却不生效"和"上次装载失败想再试一次"。实现是**卸下再扫**——
+        不新增生命周期原语，装载与卸载仍然只有 `_load` / `_unload` 两条路。
+        """
+        async with self._lock:
+            if path in self._loaded:
+                await self._unload(path, DiscoveryReport())
+            return await self._scan()
+
+    def inventory(self, source: str) -> list[dict[str, Any]]:
+        """这一层插件库的清单：谁在、什么状态、为什么没生效。
+
+        给模型看（`inspect_graph` 的 `plugins`）。数据全部来自已有的两个真相——
+        `_loaded`（文件 → fiber，状态直接问 fiber）与 `last_report`（装载 / 待批准 / 失败原因），
+        所以不用另扫一次盘，也不会和实际状态对不上。
+        """
+        rows: dict[str, dict[str, Any]] = {}
+
+        for path, (fiber, _) in self._loaded.items():
+            state = getattr(getattr(fiber, 'state', None), 'name', 'UNKNOWN')
+            missing = list(fiber.missing_services()) if hasattr(fiber, 'missing_services') else []
+            row: dict[str, Any] = {
+                'name': getattr(fiber, 'name', path.stem),
+                'source': source,
+                'file': path.name,
+                'state': state,
+            }
+            if missing:
+                # PENDING 的常见原因是 `inject` 的服务没到——把缺的名字点出来，别让人猜
+                row['reason'] = '等待服务：' + '、'.join(missing)
+            rows[path.name] = row
+
+        for name, reason in self.last_report.failed:
+            rows[name] = {'name': name, 'source': source, 'file': name, 'state': 'FAILED', 'reason': reason}
+
+        for name in self.last_report.pending:
+            rows.setdefault(
+                name,
+                {'name': name, 'source': source, 'file': name, 'state': '待批准', 'reason': '未写入信任清单'},
+            )
+
+        # 停用的（`_` 开头）也要列出来：不然"停用"在界面上等于"消失"，用户没法再启用它
+        directory = self.directory()
+        if directory is not None and directory.is_dir():
+            for path in sorted(directory.iterdir()):
+                if not path.is_file() or not path.name.startswith('_'):
+                    continue
+                if path.suffix not in SUFFIXES:
+                    continue
+                rows.setdefault(
+                    path.name,
+                    {
+                        'name': path.stem.lstrip('_'),
+                        'source': source,
+                        'file': path.name,
+                        'state': '已停用',
+                        'reason': '文件名以 _ 开头（插件库不扫这种文件）',
+                    },
+                )
+
+        return [rows[key] for key in sorted(rows)]
+
     async def _scan(self) -> DiscoveryReport:
         report = DiscoveryReport()
         desired = self._desired(report)
@@ -500,6 +572,72 @@ class PluginLibraries:
         self._touch(canonical)
         return True
 
+    async def untrust(self, workspace: str, filename: str) -> bool:
+        """把文件从信任清单里去掉（撤销批准）→ **立刻卸载**。返回是否真的去掉过。
+
+        与 `trust()` 对称：写清单 + 立刻扫一次。**不删文件**——撤信任只是"不再装载"，
+        文件还在、随时能再批准；"删除"是另一个动作（危险得多，由管理面显式确认）。
+        """
+        names = trusted_files(workspace)
+        if filename not in names:
+            return False
+        write_trust(workspace, names - {filename})
+        logger.info('工作区插件已撤信任：%s（%s）', filename, scope_of(workspace) or workspace)
+        await self.rescan(workspace)
+        return True
+
+    async def rescan(self, workspace: str) -> DiscoveryReport:
+        """立刻扫一次该工作区的库（不等轮询那一秒）。"""
+        discovery = await self._discovery_for(workspace)
+        if discovery is None:
+            return DiscoveryReport()
+        report = await discovery.scan()
+        if report.changed:
+            logger.info('工作区插件库（%s）：%s', scope_of(workspace), report.render())
+        return report
+
+    async def rescan_global(self) -> DiscoveryReport:
+        """立刻扫一次全局库（管理面停用/启用后不用等轮询）。"""
+        if self._global is None:
+            return DiscoveryReport()
+        report = await self._global.scan()
+        if report.changed:
+            logger.info('全局插件库：%s', report.render())
+        return report
+
+    async def reload(self, workspace: str | None, filename: str) -> DiscoveryReport:
+        """强制重读某个文件（改了不生效 / 装载失败想再试一次时用）。
+
+        `workspace` 为空 = 全局库。
+        """
+        discovery = self._global if not workspace else await self._discovery_for(workspace)
+        if discovery is None or not filename:
+            return DiscoveryReport()
+        directory = discovery.directory()
+        if directory is None:
+            return DiscoveryReport()
+        return await discovery.reload_file(directory / filename)
+
+    async def _discovery_for(self, workspace: str) -> PluginDiscovery | None:
+        if not self.workspace_enabled or not workspace:
+            return None
+        canonical = scope_of(workspace)
+        discovery = self._workspaces.get(canonical)
+        if discovery is None:
+            discovery = await self._register(workspace, canonical)
+        self._touch(canonical)
+        return discovery
+
+    def library_dirs(self, workspace: str | None = None) -> dict[str, str | None]:
+        """两级插件库的目录（管理面用来展示"文件放哪"）。"""
+        workspace_dir = (
+            str(Path(workspace) / CONFIG_DIR / PLUGIN_SUBDIR) if workspace else None
+        )
+        return {
+            SOURCE_GLOBAL: str(self._global.directory()) if self._global else None,
+            SOURCE_WORKSPACE: workspace_dir,
+        }
+
     def loaded_summary(self) -> str:
         """一行摘要（日志用）：全局装载情况 + 已登记的工作区数。"""
         parts: list[str] = []
@@ -511,6 +649,47 @@ class PluginLibraries:
         elif not self.workspace_enabled:
             parts.append('工作区库未启用（PLUGINS_WORKSPACE=0）')
         return '；'.join(parts)
+
+    def inventory(self, workspace: str | None = None) -> list[dict[str, Any]]:
+        """**模型可见的插件总清单**：库里的（全局 + 当前工作区）+ 内核注册表里的内置那批。
+
+        与 `loaded_summary()` 的分工：那个是给人看的一行摘要（日志），这个回答模型那个问题——
+        "我有哪些插件、谁没生效、为什么"。这正是 inspect_graph 的 `plugins` 字段，
+        也是"只加工具 / 只挂资产的插件在图里看不见"的补位。
+        """
+        rows: list[dict[str, Any]] = []
+        discovered: set[int] = set()
+
+        if self._global is not None:
+            rows.extend(self._global.inventory('全局'))
+            discovered.update(id(fiber) for fiber in self._global.fibers())
+
+        if workspace:
+            discovery = self._workspaces.get(scope_of(workspace))
+            if discovery is not None:
+                rows.extend(discovery.inventory('工作区'))
+                discovered.update(id(fiber) for fiber in discovery.fibers())
+
+        rows.extend(self._builtin_rows(discovered))
+        return rows
+
+    def _builtin_rows(self, discovered: set[int]) -> list[dict[str, Any]]:
+        """注册表里非插件库来源的那批（内置插件、装配根直接装载的）：名字 + 状态。
+
+        没有 `registry` 就返回空：清单少一段，总好过让工具直接报错。
+        """
+        registry = getattr(self.ctx, 'registry', None)
+        if registry is None:
+            return []
+        rows: list[dict[str, Any]] = []
+        for _key, runtime in registry.entries():
+            for fiber in runtime.fibers:
+                if id(fiber) in discovered:
+                    continue
+                rows.append(
+                    {'name': fiber.name, 'source': '内置', 'state': fiber.state.name}
+                )
+        return sorted(rows, key=lambda row: row['name'])
 
     # ------------------------------------------------------------------ 内部
 

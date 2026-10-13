@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.web.api import chat
+from app.web.api import chat, plugins
 from app.common.config import LOG_LEVEL
 from app.container import get_assets, shutdown, startup
 from app.web.handler import unhandled_exception
@@ -56,6 +56,7 @@ app.add_middleware(
 )
 
 app.include_router(chat.router)
+app.include_router(plugins.router)
 
 # `/ui` 不再静态挂载：一条查表的动态路由（未装载/卸载后都返回 404）
 app.include_router(assets_router())

@@ -177,8 +177,33 @@ class GraphTools(Service):
             payload['report'] = graph.report(scope)
             payload['spec'] = graph.spec(scope)
             payload['services'] = self._services()
+            payload['plugins'] = self._plugins()
             payload['recent'] = await graph.recent(scope, limit=10)
         return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    def _plugins(self) -> list[dict[str, Any]]:
+        """我有哪些插件、什么状态、为什么没生效（内置 + 全局库 + 本工作区库）。
+
+        单靠图看不全：只加工具、只挂资产的插件不贡献片段，在 `report.participants` 里没有它们。
+        """
+        libraries = self._service_ctx.get('plugins')
+        if libraries is None:
+            return []
+        return libraries.inventory(str(current_workspace.get()))
+
+    def _inventory_line(self) -> str:
+        """写完插件后给一句"现在的整体状况"，别让人（和模型）猜。"""
+        rows = self._plugins()
+        if not rows:
+            return ''
+        active = [row for row in rows if row.get('state') == 'ACTIVE']
+        attention = [row for row in rows if row.get('state') != 'ACTIVE']
+        text = f'当前插件 {len(rows)} 个（生效 {len(active)}）'
+        if attention:
+            text += '；需要留意：' + '、'.join(
+                f"{row.get('name')}（{row.get('state')}）" for row in attention[:5]
+            )
+        return text
 
     def _services(self) -> list[dict[str, Any]]:
         """当前有哪些服务名，可作为片段的 `interface`（可调用的才能直接当节点实现）。
@@ -218,12 +243,14 @@ class GraphTools(Service):
             return (
                 f'未获批准：{rel(target)} 已写入，但不会被装载（仍在"待批准"名单里）。'
                 f'可以稍后让人批准，或删掉这个文件撤销。'
+                f'\n{self._inventory_line()}'
             )
 
         await libraries.trust(str(current_workspace.get()), target.name)
         return (
             f'已批准并装载：{rel(target)}。变更在**下一个回合边界**生效'
             f'（不会影响正在跑的这一轮）。'
+            f'\n{self._inventory_line()}'
         )
 
 

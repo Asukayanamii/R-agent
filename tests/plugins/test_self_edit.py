@@ -260,6 +260,9 @@ async def test_inspect_graph_reads_the_current_picture(tmp_path):
     services = {item['name']: item['callable'] for item in payload['services']}
     assert 'tools' in services
     assert services['tools'] is False  # Service 实例本身不可调用（要当节点得实现 __call__）
+    # 插件清单：回答"我有哪些插件"——内置那批也要在（只加工具/挂资产的插件不进图，但在这份表里）
+    plugins = payload['plugins']
+    assert any(row['name'] == 'builtin/loop' and row['source'] == '内置' for row in plugins)
 
 
 async def test_resume_works_before_the_scope_exists(tmp_path):

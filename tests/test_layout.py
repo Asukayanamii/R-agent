@@ -42,9 +42,10 @@ ALLOWED_WEB = {
 ENTRIES = ('main.py', 'desktop.py', 'container.py', 'harness/__main__.py')
 
 EXCEPTIONS = {
-    # 服务定位器：api 经装配根拿服务（get_service / get_protocol），不自己建依赖。
+    # 服务定位器：api 经装配根拿服务（get_service / get_protocol / get_plugin_admin），不自己建依赖。
     # 装配根是唯一的全局句柄；改错地方这条会红。
     ('web/api/chat.py', 'container'),
+    ('web/api/plugins.py', 'container'),
 }
 
 

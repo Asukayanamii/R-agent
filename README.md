@@ -635,6 +635,33 @@ spec 里显式带上两类**包内数据**（PyInstaller 只自动收 `.py`）�
 源码运行时默认值不变（`./data`、`~/.my_agent/plugins`），**打包形态才把默认落点换到用户目录**
 （安装目录不该被写）。
 
+## 插件管理
+
+**给模型的**：`inspect_graph` 工具的 `plugins` 字段 = 内置 + 全局库 + 当前工作区库的清单，
+每行 `name / source / file / state / reason`。它补的是"图里看不见的那批"——只加工具、只挂资产的
+插件不贡献片段，在合成报告里没有它们。`install_plugin` / `add_fragment` 的返回里也附一句
+"当前插件 N 个（生效 M）"，写完就知道自己在整体里什么位置。
+
+**给用户的**（后端已就绪，前端面板待做）：
+
+| 接口 | 作用 |
+| --- | --- |
+| `GET /plugins?workspace=<路径>` | 清单：来源（内置/全局/工作区）、状态（ACTIVE / 待批准 / 已停用 / FAILED / PENDING）、原因；外加两级库目录 |
+| `POST /plugins/enable` | 启用 / 停用（停用 = 文件名加 `_` 前缀 + 工作区库撤信任；对"待批准"点启用 = 批准） |
+| `POST /plugins/reload` | 强制重读某个文件（改了不生效、装载失败想再试） |
+| `POST /plugins/remove` | 删除库里的文件（危险动作，界面负责二次确认） |
+
+```bash
+curl "http://127.0.0.1:8000/plugins?workspace=D:/work"
+curl -X POST http://127.0.0.1:8000/plugins/enable \
+  -H 'content-type: application/json' \
+  -d '{"where":"workspace","workspace":"D:/work","file":"panel.json","enabled":false}'
+```
+
+三条规则：**只收文件名**（不接受路径，越界在服务层被拒）；**停用只有一种**
+（同名状态不会在"停用"与"撤信任"之间分叉）；**不绕过回合边界**（结构类改动仍在下一个回合生效，
+与 agent 改的是同一套规则）。内置插件只列不动——它们是装配的一部分。
+
 ## 命令行验证
 
 ```bash

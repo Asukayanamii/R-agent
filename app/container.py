@@ -213,6 +213,13 @@ async def startup() -> None:
         if runtime is not None:
             runtime.on_scope = libraries.ensure
 
+    # 插件管理（阶段 N）：给用户的手动管理面（列清单 / 启用停用 / 重读 / 删除）。
+    # 它只把插件库的能力翻译成用户动作，自己不维护状态——所以 `PLUGINS_ENABLED=0`
+    # 时照旧提供服务（对外表现成"未启用"），而不是让接口 500。
+    from app.web.service.plugin_admin import PluginAdmin
+
+    _provide(ctx, "plugin_admin", PluginAdmin(libraries))
+
     service = ChatService(
         runner,
         ctx.get("index"),
@@ -262,6 +269,16 @@ def get_service() -> ChatService:
     if _context is None:
         raise RuntimeError("服务尚未初始化，请确认应用已走 lifespan 启动")
     return _context.get("chat")
+
+
+def get_plugin_admin() -> Any:
+    """插件管理服务（`ctx.plugin_admin`）：web/api 的唯一入口。
+
+    与 `get_service` 同样要求应用走过 lifespan；返回的是宿主服务，不是内核服务。
+    """
+    if _context is None:
+        raise RuntimeError("服务尚未初始化，请确认应用已走 lifespan 启动")
+    return _context.get("plugin_admin")
 
 
 def get_protocol() -> Any:
