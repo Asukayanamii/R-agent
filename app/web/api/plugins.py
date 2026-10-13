@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.container import get_plugin_admin
 from app.plugins.discover import SOURCE_GLOBAL, SOURCE_WORKSPACE
+from app.web.result.result import Result
 
 WHERE = {'global': SOURCE_GLOBAL, 'workspace': SOURCE_WORKSPACE}
 """接口用英文枚举（`global` / `workspace`），服务层用插件库那套中文来源名。"""
@@ -40,6 +41,7 @@ OVERVIEW_DOC = """
 - 状态：`ACTIVE` / `PENDING`（缺服务，原因里点名）/ `FAILED`（原因里是原文）/
   `待批准`（工作区库还没批准）/ `已停用`（文件名以 `_` 开头）
 - 返回的 `plugins` 与 `inspect_graph` 工具给模型的是**同一份数据**——人和模型看到的一样
+- 响应形状与 `/chat/*` 一致：`{code, message, data}`，数据在 `data` 里（`data.plugins`）
 
 生效时机：结构类（片段）在**下一个回合边界**换图；能力类（工具 / 资产 / 服务）装载即生效。
 管理面**不绕过**这条规则。
@@ -65,22 +67,25 @@ REMOVE_DOC = """
 
 
 @router.get('', summary='插件清单（含状态与原因）', description=OVERVIEW_DOC)
-async def list_plugins(workspace: str = '') -> dict:
-    return await get_plugin_admin().overview(workspace)
+async def list_plugins(workspace: str = '') -> Result[dict]:
+    return Result.success(data=await get_plugin_admin().overview(workspace))
 
 
 @router.post('/enable', summary='启用 / 停用一个插件', description=ENABLE_DOC)
-async def set_enabled(body: PluginEnableRequest) -> dict:
-    return await get_plugin_admin().set_enabled(
+async def set_enabled(body: PluginEnableRequest) -> Result[dict]:
+    payload = await get_plugin_admin().set_enabled(
         WHERE[body.where], body.workspace, body.file, body.enabled
     )
+    return Result.success(data=payload)
 
 
 @router.post('/reload', summary='强制重读一个插件文件', description=RELOAD_DOC)
-async def reload_plugin(body: PluginFileRequest) -> dict:
-    return await get_plugin_admin().reload(WHERE[body.where], body.workspace, body.file)
+async def reload_plugin(body: PluginFileRequest) -> Result[dict]:
+    payload = await get_plugin_admin().reload(WHERE[body.where], body.workspace, body.file)
+    return Result.success(data=payload)
 
 
 @router.post('/remove', summary='删除库里的插件文件', description=REMOVE_DOC)
-async def remove_plugin(body: PluginFileRequest) -> dict:
-    return await get_plugin_admin().remove(WHERE[body.where], body.workspace, body.file)
+async def remove_plugin(body: PluginFileRequest) -> Result[dict]:
+    payload = await get_plugin_admin().remove(WHERE[body.where], body.workspace, body.file)
+    return Result.success(data=payload)

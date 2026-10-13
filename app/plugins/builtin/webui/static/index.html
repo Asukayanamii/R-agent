@@ -2348,8 +2348,10 @@ async function pluginFetch(path, init) {
   try { body = await res.json(); } catch { /* 非 JSON（网关 502 之类）下面统一报 */ }
   // 失败走的是全局异常出口：HTTP 500 + {code, message}，message 是异常原文（"库里没有这个文件"）
   if (!res.ok) throw new Error((body && body.message) || `HTTP ${res.status}`);
-  if (!body || !Array.isArray(body.plugins)) throw new Error("返回的清单读不出来");
-  return body;
+  // 与 /chat/* 一致的信封：{code, message, data}；数据在 data 里（裸形状也认，免得下次改回来又炸）
+  const data = body && body.data ? body.data : body;
+  if (!data || !Array.isArray(data.plugins)) throw new Error("返回的清单读不出来");
+  return data;
 }
 
 function pluginAction(path, payload) {
