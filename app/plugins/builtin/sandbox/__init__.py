@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
 from app.agent import sandbox
 from app.kernel import Schema, Service
@@ -56,15 +56,31 @@ class SandboxService(Service):
         self._previous = sandbox.use_policy(self.policy)
         ctx.cleanup(lambda: sandbox.use_policy(self._previous), 'builtin/sandbox.policy')
 
-    def trust(self, path: Any) -> None:
-        """把一个目录加进受信只读根（重复加没关系）。用于随包带的技能库这类应用自己的资产。"""
+    def trust(self, path: Any) -> Callable[[], None]:
+        """把一个目录加进受信只读根（重复加没关系），**返回撤销函数**。
+
+        用于随包带的技能库这类应用自己的资产。撤销函数由**调用方自己登记**成 effect
+        （`ctx.effect(lambda: ctx.sandbox.trust(dir), '…')`）——这样撤销挂在调用方 fiber 上，
+        调用方卸载时受信根一起收回；受信面不留没人认领的口子。
+        """
         raw = str(path)
         if raw in self.policy.trusted_read_roots:
-            return
+            return lambda: None
         self.policy = replace(
             self.policy, trusted_read_roots=(*self.policy.trusted_read_roots, raw)
         )
         sandbox.use_policy(self.policy)
+
+        def withdraw() -> None:
+            self.policy = replace(
+                self.policy,
+                trusted_read_roots=tuple(
+                    item for item in self.policy.trusted_read_roots if item != raw
+                ),
+            )
+            sandbox.use_policy(self.policy)
+
+        return withdraw
 
 
 def apply(ctx: Any, config: Any = None) -> None:

@@ -26,6 +26,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 import yaml
 
@@ -269,10 +270,16 @@ def _entries(directory: Path) -> list[os.DirEntry]:
     ]
 
 
-def _roots(workspace: Path | None, *, global_dir: str | None = None) -> list[tuple[Path, str]]:
+def _roots(
+    workspace: Path | None,
+    *,
+    global_dir: str | None = None,
+    extra_dirs: Iterable[str] = (),
+) -> list[tuple[Path, str]]:
     """按优先级给出 (技能根, 作用域)。靠前的同名技能获胜。
 
-    `global_dir=None` 表示引用总体配置（`SKILLS_DIR`）。
+    `global_dir=None` 表示引用总体配置（`SKILLS_DIR`）；`extra_dirs` 是插件提供的库
+    （例如 `builtin/skillbook` 随包带的教学技能），作用域标"内置"。
     """
     roots: list[tuple[Path, str]] = []
     if workspace is not None:
@@ -280,6 +287,9 @@ def _roots(workspace: Path | None, *, global_dir: str | None = None) -> list[tup
     resolved = SKILLS_DIR if global_dir is None else global_dir
     if resolved:
         roots.append((Path(resolved), "全局"))
+    for raw in extra_dirs:
+        if raw:
+            roots.append((Path(raw), "内置"))
     return roots
 
 
@@ -301,7 +311,11 @@ def _log_index(key: str, skills: list[Skill]) -> None:
 
 
 def load_skills(
-    workspace: str | Path | None, *, global_dir: str | None = None, enabled: bool | None = None
+    workspace: str | Path | None,
+    *,
+    global_dir: str | None = None,
+    enabled: bool | None = None,
+    extra_dirs: Iterable[str] = (),
 ) -> list[Skill]:
     """
     加载该工作区可用的技能，按名字排序（顺序固定，提示词前缀才不会无谓地变）。
@@ -309,8 +323,8 @@ def load_skills(
     同名冲突保留先扫到的那个（工作区优先于全局），并把两边路径都写进日志——
     "为什么改了这个技能没生效"必须能在日志里找到答案。
 
-    `enabled` / `global_dir` 为 None 表示引用总体配置；图内由 `builtin/context`
-    插件的配置显式传入。
+    `enabled` / `global_dir` 为 None 表示引用总体配置；`extra_dirs` 是插件提供的库
+    （如 `builtin/skillbook` 的教学技能）；图内由 `builtin/context` 插件显式传入。
     """
     if enabled is None:
         enabled = SKILLS_ENABLED
@@ -319,7 +333,7 @@ def load_skills(
 
     root = Path(workspace) if workspace else None
     by_name: dict[str, Skill] = {}
-    for directory, scope in _roots(root, global_dir=global_dir):
+    for directory, scope in _roots(root, global_dir=global_dir, extra_dirs=extra_dirs):
         for skill in _scan_root(directory, scope):
             existing = by_name.get(skill.name)
             if existing is not None:

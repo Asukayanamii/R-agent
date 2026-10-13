@@ -12,6 +12,7 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 from app.agent.agents_md import load_agents_files, render_project_context
 from app.agent.skills import load_skills, render_skills_block
@@ -74,13 +75,16 @@ class ContextSettings:
 
 
 def render_static_context(
-    workspace: str | None = None, settings: ContextSettings | None = None
+    workspace: str | None = None,
+    settings: ContextSettings | None = None,
+    extra_skill_dirs: Iterable[str] = (),
 ) -> str:
     """
     静态上下文块：项目约定（AGENTS.md，外→内）＋ 可用技能索引。
 
     这一段由服务 `context`（builtin/context 插件）负责注入——插件卸下就不再注入，
-    属于"功能退化"而不是错误。`settings` 不传则引用总体配置。
+    属于"功能退化"而不是错误。`settings` 不传则引用总体配置；`extra_skill_dirs` 是
+    插件提供的技能库（`builtin/skillbook` 那类），由调用方现取。
     """
     settings = settings or ContextSettings.from_app_config()
     root = Path(workspace) if workspace else PROJECT_ROOT
@@ -92,7 +96,9 @@ def render_static_context(
             parts.append(context)
 
     if settings.skills_enabled:
-        block = render_skills_block(load_skills(root, global_dir=settings.skills_dir))
+        block = render_skills_block(
+            load_skills(root, global_dir=settings.skills_dir, extra_dirs=extra_skill_dirs)
+        )
         if block:
             parts.append(block)
 

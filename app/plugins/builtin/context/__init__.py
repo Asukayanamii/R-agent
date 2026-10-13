@@ -45,7 +45,14 @@ class ContextService(Service):
 
     def static(self, workspace: str | None) -> str:
         """本工作区的静态上下文块（项目约定 + 技能索引）。"""
-        return render_static_context(workspace, self.settings)
+        return render_static_context(
+            workspace, self.settings, extra_skill_dirs=self._extra_roots()
+        )
+
+    def _extra_roots(self) -> tuple[str, ...]:
+        """插件提供的技能库（如 `builtin/skillbook`）——**现取**：装载顺序与热重载都不影响。"""
+        service = self._service_ctx.get('skill_roots')
+        return tuple(service.roots()) if service is not None else ()
 
 
 def apply(ctx: Any, config: Any = None) -> None:
