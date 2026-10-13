@@ -575,6 +575,11 @@ agent → tools（审批 + 执行） → agent
 > 浏览器端与桌面端是**同一个文件**。`builtin/webui` 插件把它的 static 目录挂到 `/ui`
 > （表驱动的一条动态路由，装卸只改表），`app/desktop.py` 的窗口也加载同一个地址。
 > **换个前端 = 换一份 webui 插件目录**；卸下这个插件，`/ui` 立即 404 而 `/chat/*` 照常。
+>
+> 资产路由认**任意已装载的 alias**（`/<alias>/…`，默认目录里找 `index.html`）：所以
+> **一个内核进程能同时服务多套前端**——工作区插件可以挂自己的工作台（例如 `/panel/…`），
+> 与内置的 `/ui` 并存、互不影响；删掉插件文件即 404（资产类是装载即生效，不用等回合边界）。
+> 代价与边界：资产是**进程级**的（不按工作区分域），别名别去抢 `/ui` 和 `/chat/*`。
 
 ## 桌面模式
 
@@ -713,3 +718,4 @@ app/
 | 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在容器里替换 |
 | 换事件类型 | `app/harness/events.py`（并 bump 协议版本），前端同步加一个 `case`；映射与编码在 `plugins/builtin/protocol/` |
 | 换前端 | `app/plugins/builtin/webui/static/` 可整体替换（或换一份 webui 插件），事件处理逻辑可直接移植到 Next.js |
+| 加一套前端（多前端并存） | 写个插件 `ctx.assets.mount('<alias>', <目录>)` → 页面在 `/<alias>/…`；与内置 `/ui` 并存，一个进程可同时挂多套（资产是进程级的） |

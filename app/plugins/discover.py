@@ -35,6 +35,7 @@ from typing import Any, Callable
 from app.harness.composer import PLUGIN_SCOPE
 from app.harness.fragment import StructureError, fragment_from_dict
 from app.kernel import Context
+from app.kernel.utils import call_plugin
 
 logger = logging.getLogger(__name__)
 
@@ -367,7 +368,9 @@ class PluginDiscovery:
         def wrapper(ctx: Context, config: Any = None) -> Any:
             token = PLUGIN_SCOPE.set(scope)
             try:
-                result = apply(ctx, config)
+                # 走 call_plugin：`def apply(ctx)` 的作者不该因为包装层而被要求多收一个参数
+                # （按签名传参是内核的约定，包装层不能绕过它）
+                result = call_plugin(apply, ctx, config)
             except BaseException:
                 PLUGIN_SCOPE.reset(token)
                 raise

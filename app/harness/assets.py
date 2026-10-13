@@ -68,19 +68,32 @@ class AssetRegistry(Service):
 
 
 def assets_router(alias: str = 'ui') -> APIRouter:
-    """一条动态路由：查表 → FileResponse；未装载/不存在/穿越 → 404。
+    """资产路由：默认 alias（``/ui``）＋ **任意已装载 alias**（``/<alias>/…``）。
 
-    注册表按请求从 ``app.state`` 取——装配根启动时放进去一次，路由表从不增删。
+    表驱动：装载即 200、卸载即 404，路由表从不增删。一个内核进程可以同时服务多个前端
+    （每个前端插件挂自己的 alias），请求进来按 alias 查表——所以并发请求之间没有共享状态。
+
+    通用那条是两段通配，**必须排在业务路由之后**（`include_router` 的顺序，装配根已经这么做）：
+    Starlette 按声明顺序匹配，否则它会吃掉 `/chat/skills`、`/docs` 这类 GET。同一条路由里
+    `/ui/...` 也要排在通用前面，免得默认前端被通用规则抢走。
     """
     router = APIRouter()
 
-    @router.get(f'/{alias}')
-    @router.get(f'/{alias}/{{path:path}}')
-    async def serve_asset(request: Request, path: str = ''):
+    def serve(request: Request, name: str, path: str) -> FileResponse:
         registry = getattr(request.app.state, ASSETS_STATE_ATTR, None)
-        target = registry.resolve(alias, path) if registry is not None else None
+        target = registry.resolve(name, path) if registry is not None else None
         if target is None:
             raise HTTPException(status_code=404, detail='资产未装载或不存在')
         return FileResponse(target)
+
+    @router.get(f'/{alias}')
+    @router.get(f'/{alias}/{{path:path}}')
+    async def serve_default(request: Request, path: str = '') -> FileResponse:
+        return serve(request, alias, path)
+
+    @router.get('/{other}')
+    @router.get('/{other}/{path:path}')
+    async def serve_any(request: Request, other: str, path: str = '') -> FileResponse:
+        return serve(request, other, path)
 
     return router

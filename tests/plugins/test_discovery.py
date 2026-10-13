@@ -290,6 +290,39 @@ async def test_python_plugin_uses_its_default_config(tmp_path):
     assert runtime.ctx.get('greeter_b').greeting == 'schema-default'
 
 
+async def test_python_plugin_may_take_only_ctx(tmp_path):
+    """`def apply(ctx)` 也得能装——内核按签名传参（`call_plugin`），装载包装层不能绕过。
+
+    真跑里抓到过：作者只写 `apply(ctx)`，被包装层按 `apply(ctx, config)` 调用 →
+    `TypeError: apply() takes 1 positional argument but 2 were given`，插件静默装载失败。
+    """
+    runtime = await make_runtime_with_impl()
+    directory = plugins_dir(tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / 'one_arg.py').write_text(
+        'from app.kernel import Service\n'
+        '\n'
+        'class Marker(Service):\n'
+        '    def __init__(self, ctx):\n'
+        "        super().__init__(ctx, 'one_arg_marker')\n"
+        '\n'
+        'def apply(ctx):\n'
+        '    Marker(ctx)\n'
+        '\n'
+        "plugin = {'apply': apply, 'name': 'workspace/one_arg'}\n",
+        encoding='utf-8',
+    )
+    approve(tmp_path, 'one_arg.py')
+
+    report = await PluginDiscovery(
+        runtime.ctx, global_dir=None, workspace=tmp_path, watch=False
+    ).scan()
+
+    assert report.loaded == ['one_arg.py（工作区）']
+    assert report.failed == []
+    assert runtime.ctx.get('one_arg_marker') is not None
+
+
 async def test_watch_loop_reverts_after_file_removal(tmp_path):
     """热重载：轮询看得见删除，结构来源自动撤销；图在下一个回合边界回到原样。"""
     runtime = await make_runtime_with_impl()

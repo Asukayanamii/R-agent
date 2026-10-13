@@ -73,6 +73,9 @@ plugin = {'apply': apply, 'name': 'workspace/fetch', 'inject': ['tools']}
   需要后台任务用 `ctx.spawn(coro)`——两者卸载时都会收干净。
 - 想贡献**片段**（图里多一条链）就在 `apply` 里 `ctx.structure.contribute(Fragment(...))`；
   工作区插件不必自己填 `scope`，装载方会带上（`PLUGIN_SCOPE`）。
+- 想要**自己的前端**：`ctx.assets.mount('panel', <目录绝对路径>)` → 页面在 `/panel/…`
+  （目录里默认找 `index.html`）。一个进程可同时挂多个 alias；内置调试前端占 `/ui`，别去抢。
+  资产是**进程级**的（不按工作区分域）。
 
 ## 片段与通道的硬规则
 

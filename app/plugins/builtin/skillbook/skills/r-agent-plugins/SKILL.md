@@ -83,10 +83,16 @@ plugin = {
 | `ctx.provide(name, value)` | 提供服务（服务名就是抽象节点的 `interface`） |
 | `ctx.structure.contribute(fragment)` | 贡献片段（code 里手写 `Fragment`） |
 | `ctx.tools.register(tool)` | 加工具（下一次模型调用就能用，不用重建图） |
-| `ctx.assets.mount(alias, dir)` | 挂静态资产（前端插件用的就是它） |
+| `ctx.assets.mount(alias, dir)` | 挂静态资产（前端插件用的就是它），页面在 `/<alias>/…` |
 | `ctx.cleanup(fn)` / `ctx.resource.acquire(fn)` | 卸载时清理（异步清理也支持） |
 | `ctx.spawn(coro)` | 后台任务（卸载时取消并等待） |
 | `ctx.logger.info(...)` | 日志（级别方法：`error` / `warn` / `info` / `debug`——是 `warn` 不是 `warning`，且不支持 `%.2f` 这类精度写法） |
+
+**前端插件（资产类）怎么落地**：页面文件用 `write` 写进工作区（比如 `panel/index.html`），`.py` 里
+`ctx.assets.mount('panel', <那个目录的绝对路径>)`，然后从 `/<alias>/index.html` 访问（目录默认找
+`index.html`）。一个进程可以同时挂多个 alias（多个前端并存）；内置调试前端占的是 **`/ui`**，
+起自己的前端就换个 alias，别去抢 `/ui`——那会把所有人的调试界面换掉。
+**资产是进程级的**：工作区插件挂的 alias 对所有会话可见（与结构不同，不按工作区分域）。
 
 **校验规则**（写上就懂，装不上会给出稳定错误码）：片段不许有内部边逃逸、不许成环、插件片段不许写条件边；
 节点名不许与骨架/已装载片段冲突；通道命名必须在自己命名空间里；`Config` 校验不过 = 拒绝装载。
