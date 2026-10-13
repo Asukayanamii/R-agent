@@ -270,6 +270,39 @@ async def test_abandon_clears_a_pending_interrupt(tmp_path):
     assert not any(item.type == 'error' for item in frames), [item.model_dump() for item in frames]
 
 
+async def test_abandon_repairs_dangling_calls(tmp_path):
+    """另一种卡法：停在待确认时**硬发**一条新消息（前端的待发送队列正是为了避免这个），
+    LangGraph 丢掉 interrupt、留下没人回应的 tool_calls → 之后必然 400。
+    `abandon` 也要能救这种会话（`_stuck_reason` 的第二种卡法）。"""
+    from app.plugins.builtin import protocol as protocol_plugin
+
+    script = [
+        call('add_fragment', {'name': 'probe_notes', 'declaration': DECLARATION}),
+        AIMessage(content='加好了', usage_metadata=USAGE),
+    ]
+    runtime, libraries, workspace = await make_wired(tmp_path, script + script)
+    await runtime.ctx.plugin(protocol_plugin.plugin, essential=True)
+
+    from app.agent.langgraph_runner import LangGraphRunner
+
+    runner = LangGraphRunner(runtime, runtime.ctx.get('protocol'))
+    [item async for item in runner.stream('t1', '加一条链', workspace=str(workspace))]
+    assert await runner.is_interrupted('t1')
+
+    # 硬发（无视待确认）：这就是"卡成悬空调用"的产生方式
+    try:
+        [item async for item in runner.stream('t1', '硬发一条', workspace=str(workspace))]
+    except Exception:  # noqa: BLE001 - 抛不抛都行，要的是它留下的状态
+        pass
+
+    count = await runner.abandon('t1', str(workspace))
+
+    assert count >= 1, '悬空调用应当被补上回执'
+    assert not await runner.has_dangling_tool_calls('t1')
+    frames = [item async for item in runner.stream('t1', '现在能继续了吗', workspace=str(workspace))]
+    assert not any(item.type == 'error' for item in frames), [item.model_dump() for item in frames]
+
+
 async def test_inspect_graph_reads_the_current_picture(tmp_path):
     """`inspect_graph` 给模型一份只读的现状：报告 + 片段清单 + 最近审计。"""
     script = [

@@ -2138,9 +2138,17 @@ async function restorePendingCard() {
   if (!threadId || busy) return;
   try {
     const { pending } = await loadHistory(threadId);
-    if (!pending.length) return;
     const ctx = newTurn();
-    pending.forEach((item) => ctx.interrupt(item));
+    if (pending.length) {
+      pending.forEach((item) => ctx.interrupt(item));
+    } else {
+      // 服务端说这个会话卡着（pending），历史里却没有待确认卡片：那是"悬空工具调用"那种卡法
+      // （一轮被错误掀翻）。同一张卡片、同一个出口——options 传空数组，只留"放弃"那个按钮。
+      ctx.interrupt({
+        prompt: "这个会话卡在上一轮的错误上（有没回应的工具调用），放弃它才能继续。",
+        options: [],
+      });
+    }
     toBottom();
   } catch (err) {
     console.warn("[my-agent] 待确认卡片恢复失败", err);

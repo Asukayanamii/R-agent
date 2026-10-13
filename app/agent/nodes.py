@@ -43,8 +43,11 @@ def _looks_like_rejection(error: Exception) -> bool:
     return "invalid_request" in text or "badrequest" in text or " 400" in text
 
 
-def _request_shape(messages: list, registry: Any, model: Any) -> str:
-    """请求形状摘要：**未配对的工具调用**是已知会让 provider 直接 400 的一种（见 messages.py）。"""
+def _request_shape(messages: list, registry: Any, model: Any, thread_id: str = "-") -> str:
+    """请求形状摘要：**未配对的工具调用**是已知会让 provider 直接 400 的一种（见 messages.py）。
+
+    反过来也有用：`未配对=0` 而网关仍拒，说明形状是合法的——那问题在路由/上游，不在我们这边。
+    """
     calls = [
         item["id"]
         for message in messages
@@ -59,9 +62,9 @@ def _request_shape(messages: list, registry: Any, model: Any) -> str:
         roles[name] = roles.get(name, 0) + 1
     chars = sum(len(str(getattr(message, "content", "") or "")) for message in messages)
     return (
-        f"模型={getattr(model, 'model_name', None) or type(model).__name__} 条数={len(messages)} "
-        f"角色={roles} 工具调用={len(calls)} 未配对={len(dangling)} 正文≈{chars} 字符 "
-        f"工具={len(registry.names())}"
+        f"会话={thread_id} 模型={getattr(model, 'model_name', None) or type(model).__name__} "
+        f"条数={len(messages)} 角色={roles} 工具调用={len(calls)} 未配对={len(dangling)} "
+        f"正文≈{chars} 字符 工具={len(registry.names())}"
     )
 
 
@@ -156,7 +159,11 @@ def make_model_node(
             if _looks_like_rejection(error):
                 # 网关的 400 是笼统拒绝（"invalid request error"），只有形状能说明问题：
                 # 未配对的工具调用、请求多大、带的工具多少。这一行是下次排查的唯一线索。
-                logger.warning("模型拒绝了这次请求：%s\n  形状：%s", error, _request_shape(prompt_messages, registry, model))
+                logger.warning(
+                    "模型拒绝了这次请求：%s\n  形状：%s",
+                    error,
+                    _request_shape(prompt_messages, registry, model, call["thread_id"]),
+                )
             raise
         meta = getattr(response, "usage_metadata", None) or {}
         if not meta:

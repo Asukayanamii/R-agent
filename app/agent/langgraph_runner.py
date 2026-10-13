@@ -264,31 +264,31 @@ class LangGraphRunner:
         return len(calls)
 
     async def abandon(self, thread_id: str, workspace: str | None = None) -> int:
-        """放弃当前的待确认：把 interrupt 消化掉，让会话能继续发新消息。
+        """把一个卡住的会话救回可用状态：清掉待确认 + 补掉悬空调用。
 
-        用在"卡片点过一次、但那次 resume 失败（网关 400 / 断网）"的场景：服务端 interrupt
-        还挂着，前端就会把之后每条消息都判成"待确认未处理"而只排队（`threadPending`），
-        看起来整条会话死了——报错里那句"请放弃这次待确认"原本没有对应的动作。
+        用在"确认卡点过、但那次继续失败"或"一轮被错误掀翻、留下悬空 tool_calls"之后：
+        服务端还认为它卡着（`_stuck_reason`），前端就会把之后每条消息都判成"待确认未处理"
+        而只排队（`threadPending`），看起来整条会话死了——报错里那句"请放弃这次待确认"
+        原本没有对应的动作。
 
-        实现与 `repair_after_abort` 同一招：`aupdate_state(as_node="tools")` 补一条带 error 的回执，
-        等于替用户回答"这轮作罢"。区别是它**允许动停在 interrupt 上的会话**——那正是它的用途。
-        返回消化掉的调用数（0 = 本来就没有待确认）。
+        两支都做（`_stuck_reason` 的那两种卡法各一支）：停在 interrupt 上就补 error 回执消化它
+        （与 `repair_after_abort` 同一招，区别是允许动 interrupt）；有悬空调用就补"已中断"回执。
+        返回处理掉的条数（0 = 本来就不卡）。
         """
         config = self._config(thread_id, workspace)
+        handled = 0
         async with self.runtime.lease(thread_id, scope=workspace or '') as version:
             snapshot = await version.graph.aget_state(config)
-            if not snapshot.interrupts:
-                return 0
             calls = unanswered_calls(snapshot.values.get("messages", []))
-            if not calls:
-                logger.warning("有待确认但没有可回执的调用，放弃失败 thread=%s", thread_id)
+            if not snapshot.interrupts and not calls:
                 return 0
+            content = ABANDON_MESSAGE if snapshot.interrupts else INTERRUPTED_MESSAGE
             await version.graph.aupdate_state(
                 config,
                 {
                     "messages": [
                         ToolMessage(
-                            content=ABANDON_MESSAGE,
+                            content=content,
                             tool_call_id=call["id"],
                             status="error",
                         )
@@ -297,8 +297,14 @@ class LangGraphRunner:
                 },
                 as_node="tools",
             )
-        logger.info("已放弃待确认 thread=%s 条数=%d", thread_id, len(calls))
-        return len(calls)
+            handled = len(calls)
+        logger.info(
+            "已放弃/修复 thread=%s 条数=%d（%s）",
+            thread_id,
+            handled,
+            "待确认" if snapshot.interrupts else "悬空调用",
+        )
+        return handled
 
     async def scan_threads(self, limit: int = 200) -> list[ThreadRecord]:
         """
