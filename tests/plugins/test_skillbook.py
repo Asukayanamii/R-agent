@@ -10,7 +10,7 @@ import pytest
 
 from app.agent import sandbox
 from app.agent.runtime import current_workspace
-from app.agent.skills import load_skills
+from app.agent.skills import find_skill, load_skills
 from app.kernel import Context
 from app.plugins.builtin import context as context_plugin
 from app.plugins.builtin import sandbox as sandbox_plugin
@@ -104,3 +104,13 @@ async def test_skillbook_can_be_disabled(workspace):
         assert service is not None and service.roots() == ()
     finally:
         await dispose(fiber)
+
+
+async def test_find_skill_sees_plugin_libraries(workspace):
+    """`/skill:<名字>` 与 `/skills` 走的是 `find_skill` / `load_skills`——它们也要能看见插件库。"""
+    assert find_skill(workspace, 'r-agent-plugins') is None
+
+    found = find_skill(workspace, 'r-agent-plugins', extra_dirs=(str(skillbook.SKILLS_DIR),))
+
+    assert found is not None and found.scope == '内置'
+    assert found.path.name == 'SKILL.md'

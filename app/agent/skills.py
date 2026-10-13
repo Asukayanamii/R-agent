@@ -355,12 +355,17 @@ def load_skills(
     return skills
 
 
-def find_skill(workspace: str | Path | None, name: str) -> Skill | None:
-    """按名字找一个技能（含 `manual_only` 的——手动调用正是它存在的意义）。"""
+def find_skill(
+    workspace: str | Path | None, name: str, *, extra_dirs: Iterable[str] = ()
+) -> Skill | None:
+    """按名字找一个技能（含 `manual_only` 的——手动调用正是它存在的意义）。
+
+    `extra_dirs` 同 `load_skills`：插件提供的技能库（如内置教学技能）也要能被 `/skill:<名字>` 找到。
+    """
     wanted = (name or "").strip().lower()
     if not wanted:
         return None
-    for skill in load_skills(workspace):
+    for skill in load_skills(workspace, extra_dirs=extra_dirs):
         if skill.name == wanted:
             return skill
     return None

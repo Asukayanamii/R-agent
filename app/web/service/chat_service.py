@@ -45,13 +45,26 @@ class ChatService:
         index: Any,
         workspaces: Any,
         protocol: Any,
+        skill_extra_roots: Any = None,
     ) -> None:
-        """`index` / `workspaces` 是 `builtin/store` 插件提供的服务（鸭子类型：不 import 插件）。"""
+        """`index` / `workspaces` 是 `builtin/store` 插件提供的服务（鸭子类型：不 import 插件）；
+        `skill_extra_roots` 是**现取**插件技能库的可调用对象（`builtin/skillbook` 那类），
+        这样 `/skills` 与 `/skill:<名字>` 与提示词里的索引看到的是同一批技能。"""
         self._runner = runner
         self._index = index
         self._workspaces = workspaces
         # 事件构造走协议服务（`ctx.protocol`）：换 wire 形状时这层不改
         self._protocol = protocol
+        self._skill_extra_roots = skill_extra_roots
+
+    def _extra_skill_dirs(self) -> tuple[str, ...]:
+        if self._skill_extra_roots is None:
+            return ()
+        try:
+            return tuple(self._skill_extra_roots() or ())
+        except Exception as error:  # noqa: BLE001 - 现取失败不该挡住技能列表
+            logger.warning("技能库现取失败，按没有内置库处理：%s", error)
+            return ()
 
     async def _stuck_reason(self, thread_id: str) -> str | None:
         """会话是否卡着（用于索引里的 pending 标记）。"""
@@ -77,7 +90,9 @@ class ChatService:
         索引标题用的是命令本身：正文可能几百行，当标题会把侧边栏撑爆。
         """
         workspace = await self._workspace(thread_id)
-        skill = find_skill(workspace or PROJECT_ROOT, name)
+        skill = find_skill(
+            workspace or PROJECT_ROOT, name, extra_dirs=self._extra_skill_dirs()
+        )
         if skill is None:
             raise InvalidInput(
                 f"没有名为 {name} 的技能（输入 /skills 看可用的）。技能放在 "
@@ -303,7 +318,7 @@ class ChatService:
             if not target.is_dir():
                 raise InvalidInput(f"不是目录：{target.as_posix()}")
 
-        found = load_skills(target)
+        found = load_skills(target, extra_dirs=self._extra_skill_dirs())
         logger.debug("列出技能 workspace=%s 共%d个", target.as_posix(), len(found))
         return SkillListResponse(
             workspace=target.as_posix(),

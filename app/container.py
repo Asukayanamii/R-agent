@@ -107,6 +107,12 @@ def _compaction_settings(ctx: Context):
     return service.settings if service is not None else CompactionSettings.from_app_config()
 
 
+def _skill_extra_roots(ctx: Context) -> tuple[str, ...]:
+    """插件提供的技能库（`builtin/skillbook` 那类）——**现取**：`/skills` 与提示词索引同源。"""
+    service = ctx.get('skill_roots')
+    return tuple(service.roots()) if service is not None else ()
+
+
 async def _build_runner(ctx: Context) -> AgentRunner:
     from app.common.config import CONFIG_WARNINGS, GRAPH_VERSIONS_KEEP, STUB_ENABLED
 
@@ -202,7 +208,11 @@ async def startup() -> None:
             runtime.on_scope = libraries.ensure
 
     service = ChatService(
-        runner, ctx.get("index"), ctx.get("workspaces"), ctx.get("protocol")
+        runner,
+        ctx.get("index"),
+        ctx.get("workspaces"),
+        ctx.get("protocol"),
+        skill_extra_roots=lambda: _skill_extra_roots(ctx),
     )
     _provide(ctx, "chat", service)
 
