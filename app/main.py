@@ -11,18 +11,25 @@ from app.web.handler import unhandled_exception
 from app.harness.assets import ASSETS_STATE_ATTR, assets_router
 from app.web.result.result import ErrorResult, Result
 
-logging.basicConfig(
-    # 第三方库的 INFO/DEBUG 是噪音（aiosqlite 连每条 SQL 和参数 blob 都打），统一压到 WARNING；
-    # 我们自己的 app.* 另行开到 LOG_LEVEL。uvicorn 的 logger 自带 handler 且不向上传播，不受影响。
-    level=logging.WARNING,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    force=True,  # 覆盖 root 上可能已经被装过的配置
-)
-logging.getLogger("app").setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+def _configure_logging() -> None:
+    """装日志：第三方压到 WARNING，我们自己的 `app.*` 开到 `LOG_LEVEL`。
+
+    **在启动时调，不在导入时调**：模块级副作用会让"只是 import 一下"的代码
+    （测试、CLI、脚本）悄悄改掉全局日志行为——曾经让内核的 DEBUG 用例在收集阶段就被压没。
+    """
+    logging.basicConfig(
+        # 第三方库的 INFO/DEBUG 是噪音（aiosqlite 连每条 SQL 和参数 blob 都打），统一压到 WARNING；
+        # 我们自己的 app.* 另行开到 LOG_LEVEL。uvicorn 的 logger 自带 handler 且不向上传播，不受影响。
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,  # 覆盖 root 上可能已经被装过的配置
+    )
+    logging.getLogger("app").setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _configure_logging()
     await startup()
     # 资产注册表放在 app.state 上：那条动态路由按请求查表，装卸只改表、不动路由表
     setattr(app.state, ASSETS_STATE_ATTR, get_assets())

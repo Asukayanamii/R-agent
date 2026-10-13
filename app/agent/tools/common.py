@@ -1,11 +1,12 @@
 """
-工具共用的路径展示、文件遍历与输出截断。
+工具共用的路径展示、文件遍历、输出截断与**密钥遮蔽**。
 
 **路径检查不在这里**——越界与受保护路径的判定在 `app.agent.sandbox`，
 因为那需要触发 interrupt 征求授权，属于会话级行为。
 """
 
 import os
+import re
 from pathlib import Path
 from typing import NoReturn
 
@@ -15,6 +16,32 @@ from app.agent.runtime import workspace_relative
 
 MAX_BYTES = 50 * 1024
 MAX_LINES = 2000
+
+SECRET_NAME = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|AUTH)", re.IGNORECASE)
+"""按名字认密钥：`LLM_API_KEY` / `GITHUB_TOKEN` / `AWS_SECRET_ACCESS_KEY` …。"""
+
+SECRET_MIN_LEN = 8
+"""太短的值不当密钥——否则 `AUTH=1` 会把正文里所有 "1" 都抹掉。"""
+
+
+def redact_secrets(text: str) -> str:
+    """
+    把"看起来是密钥"的环境变量值从工具输出里抹掉。
+
+    动机是真实的：模型一句 `env | grep …` 就能把 `LLM_API_KEY` 打进对话——密钥进了会话记录、
+    也随每次请求发给模型服务（实测还会被网关以 400 拒掉，整轮对话当场断）。
+    `read`/`grep` 对 `.env` 有硬阻断，`env`、`echo $X`、`set` 这些没有；在**出口**兜一次最省事，
+    覆盖所有工具，也不用去枚举绕法。
+    """
+    if not text:
+        return text
+    out = text
+    for name, value in os.environ.items():
+        if len(value) < SECRET_MIN_LEN or not SECRET_NAME.search(name):
+            continue
+        if value in out:
+            out = out.replace(value, f"«已隐去 {name}»")
+    return out
 
 
 def fail(message: str) -> NoReturn:

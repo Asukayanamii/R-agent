@@ -13,3 +13,5 @@ data/
 .commandcode
 .my_agent/
 LESSONS.md
+build/
+dist/

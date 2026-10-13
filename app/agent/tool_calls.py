@@ -26,6 +26,7 @@ from langgraph.types import interrupt
 
 from app.agent.messages import error_message, text_of
 from app.agent.runtime import current_workspace
+from app.agent.tools.common import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +139,11 @@ async def invoke_call(
     # （`content_and_artifact`，目前只有 edit 的结构化差异用它），正文进提示词、artifact 不进。
     # 注意：只传参数 dict 调用的形态**会把 artifact 悄悄丢掉**（实测），所以这里必须给整条调用。
     if isinstance(output, ToolMessage):
+        # `@tool` 自己造的 ToolMessage 也要过遮蔽：`env` / `echo $KEY` 这条路没有沙箱兜底
+        if isinstance(output.content, str):
+            output.content = redact_secrets(output.content)
         return output
-    return ToolMessage(content=text_of(output), tool_call_id=call["id"])
+    return ToolMessage(content=redact_secrets(text_of(output)), tool_call_id=call["id"])
 
 
 async def run_calls(

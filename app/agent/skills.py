@@ -104,8 +104,13 @@ _reported_collisions: set[tuple[str, str]] = set()
 
 
 def _read_text(path: Path) -> str:
-    """读文件内容。IO 集中在这里，探针可以替掉它数读取次数。"""
-    return path.read_text(encoding="utf-8")
+    """读文件内容。IO 集中在这里，探针可以替掉它数读取次数。
+
+    `utf-8-sig`：Windows 上的编辑器（记事本、PowerShell 的 `Set-Content -Encoding utf8`）
+    会给 UTF-8 加 BOM，带 BOM 的 `SKILL.md` 首行就不是 `---` → frontmatter 解析失败 →
+    技能"凭空消失"（只留一条告警）。utf-8-sig 对没有 BOM 的文件与 utf-8 完全一样，白拿的容错。
+    """
+    return path.read_text(encoding="utf-8-sig")
 
 
 def _frontmatter(text: str) -> tuple[dict | None, str]:

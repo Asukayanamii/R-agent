@@ -11,13 +11,27 @@
 """
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+FROZEN = bool(getattr(sys, "frozen", False))
+"""是不是打包后的可执行文件（PyInstaller 会设 ``sys.frozen``）。"""
 
-if not (PROJECT_ROOT / "requirements.txt").is_file():
+APP_DIR = (
+    Path(sys.executable).resolve().parent
+    if FROZEN
+    else Path(__file__).resolve().parents[3]
+)
+"""应用目录：打包后是可执行文件所在目录，源码运行是项目根。
+
+相对路径配置（`SQLITE_PATH=./data/...`）都锚定到它——所以"从哪个目录启动"不影响落点。
+"""
+
+PROJECT_ROOT = APP_DIR
+
+if not FROZEN and not (PROJECT_ROOT / "requirements.txt").is_file():
     raise RuntimeError(f"PROJECT_ROOT 算错了，指向 {PROJECT_ROOT}")
 
 CONFIG_DIR = ".my_agent"
@@ -27,9 +41,85 @@ CONFIG_DIR = ".my_agent"
 所以它只能有一处定义——写两处迟早会分叉，而分叉的表现是"某个功能静默看不到文件"。
 """
 
-# 显式指定 .env 位置，不用 load_dotenv() 的上溯查找：
-# 上溯是按调用方文件位置找的，行为和路径解析不一致，容易踩坑。
-load_dotenv(PROJECT_ROOT / ".env")
+HOME_DIR = Path.home() / CONFIG_DIR
+"""用户目录下的应用目录：插件库、技能库、会话库、用户配置的默认落点。
+
+**打包后所有可写的东西都落在这里**（安装目录只读/不该被写）；源码运行也认它，
+但默认值仍偏向工程目录下那份（`./data`、`~/.my_agent/plugins`）——老用户的位置不变。
+"""
+
+USER_ENV = HOME_DIR / ".env"
+"""用户级配置：打包后用户改这里，不动安装目录（首次启动会自动生成一份带注释的模板）。"""
+
+APP_ENV = PROJECT_ROOT / ".env"
+"""应用级配置：源码运行就是仓库里那份 `.env`；打包后是 exe 旁边那份（便携部署用）。"""
+
+
+def _load_env() -> None:
+    """三层配置，优先级 **真环境变量 > 用户级 `.env` > 应用级 `.env`**。
+
+    `load_dotenv` 默认不覆盖已有值，所以顺序是：先记下真环境变量 → 应用级 → 用户级（覆盖）
+    → 把真环境变量盖回来。写死这个顺序，是因为"用户在 `~/.my_agent/.env` 里改了插件库位置，
+    却被安装目录里那份默认值盖掉"是最难查的一类问题（表现是"改了没反应"）。
+    """
+    preset = dict(os.environ)
+    load_dotenv(APP_ENV, override=False)
+    load_dotenv(USER_ENV, override=True)
+    os.environ.update(preset)
+
+
+def _ensure_user_env() -> None:
+    """打包后首次启动生成一份带注释的用户配置，把"能改什么"摆到用户面前。
+
+    只在打包形态做：源码运行有仓库里的 `.env`，不需要在用户目录再放一份。
+    """
+    if not FROZEN or USER_ENV.exists():
+        return
+    try:
+        USER_ENV.parent.mkdir(parents=True, exist_ok=True)
+        USER_ENV.write_text(USER_ENV_TEMPLATE, encoding="utf-8")
+    except OSError:
+        # 用户目录不可写也不该拦启动：配置全都有默认值
+        pass
+
+
+USER_ENV_TEMPLATE = """\
+# my-agent 用户配置（打包后首次启动自动生成）
+#
+# 优先级：真环境变量 > 这个文件 > 安装目录旁的 .env > 代码默认值
+# **每一行默认都是注释掉的**：不改这个文件 = 全用默认值；要改就把对应行取消注释。
+# （自动生成一份"全部生效的空配置"会盖掉别处的设置，表现是"改了没反应"。）
+
+# ---- 模型 ----
+# LLM_API_KEY=
+# LLM_BASE_URL=https://api.deepseek.com/v1
+# LLM_MODEL=deepseek-chat
+# 上下文窗口（tokens）：按你实际用的模型填，压缩阈值按它算
+# LLM_CONTEXT_WINDOW=64000
+
+# ---- 库的位置（都支持 ~ 与相对本文件的路径）----
+# 全局插件库：`.py`（可编程）/ `.json`（纯片段声明），装载即信任
+# PLUGINS_DIR=~/.my_agent/plugins
+# 全局技能库（`SKILL.md` 形态）；工作区技能库固定在 <工作区>/.my_agent/skills
+# SKILLS_DIR=~/.my_agent/skills
+# 会话/审计库
+# SQLITE_PATH=~/.my_agent/data/checkpoints.db
+
+# ---- 插件开关 ----
+# 工作区插件库（按会话工作区分区、每个文件要人工批准）
+# PLUGINS_WORKSPACE=1
+# 内容指纹轮询热重载
+# PLUGIN_WATCH=1
+# 允许 agent 用 install_plugin 写 .py（等于执行任意代码，仍要过确认卡）：默认关
+# PLUGIN_AUTHOR_INSTALL=0
+
+# ---- 日志 ----
+# LOG_LEVEL=INFO
+"""
+
+
+_ensure_user_env()
+_load_env()
 
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1").strip()
@@ -130,7 +220,26 @@ def _resolve(raw: str) -> str:
     return str(path if path.is_absolute() else (PROJECT_ROOT / path).resolve())
 
 
-SQLITE_PATH = _resolve(os.getenv("SQLITE_PATH", "./data/checkpoints.db"))
+def _default_sqlite() -> str:
+    """会话库默认位置：打包后放用户目录（安装目录不该被写），源码运行维持原来的 `./data`。
+
+    老用户的位置一个字节都不动——这是"默认值只在打包形态换"的原因。
+    """
+    return str(HOME_DIR / "data" / "checkpoints.db") if FROZEN else "./data/checkpoints.db"
+
+
+SQLITE_PATH = _resolve(os.getenv("SQLITE_PATH", "").strip() or _default_sqlite())
+
+
+def library_paths() -> dict[str, str]:
+    """库的位置一览（启动日志与"我的库在哪"这类问题的唯一答案）。"""
+    return {
+        "应用目录": str(APP_DIR),
+        "用户配置": str(USER_ENV),
+        "全局插件库": PLUGINS_DIR,
+        "全局技能库": SKILLS_DIR,
+        "会话库": SQLITE_PATH,
+    }
 
 # ---- 技能（Skills）与项目约定（AGENTS.md） ----
 # 技能是"索引常驻 + 正文按需读取"的能力包（`SKILL.md`），约定文件是 `AGENTS.md` / `CLAUDE.md`。

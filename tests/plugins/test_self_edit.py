@@ -225,6 +225,21 @@ async def test_install_plugin_is_gated_by_config(tmp_path):
     assert (workspace2 / '.my_agent' / 'plugins' / 'probe2.py').is_file()
 
 
+async def test_name_with_suffix_is_not_doubled(tmp_path):
+    """名字里已经带了 `.py` / `.json` 就不要再加一个：真跑里出现过 `panel.py.py`。"""
+    source = 'def apply(ctx):\n    ctx.logger.info("hi")\n\n\nplugin = {"apply": apply, "name": "ws/probe"}\n'
+    script = [
+        call('install_plugin', {'name': 'probe.py', 'source': source}),
+        AIMessage(content='好', usage_metadata=USAGE),
+    ]
+    runtime, libraries, workspace = await make_wired(tmp_path, script, allow_install=True)
+
+    await run_turn(runtime, workspace, 'suffix', '装个插件')
+
+    assert (workspace / '.my_agent' / 'plugins' / 'probe.py').is_file()
+    assert not (workspace / '.my_agent' / 'plugins' / 'probe.py.py').exists()
+
+
 async def test_inspect_graph_reads_the_current_picture(tmp_path):
     """`inspect_graph` 给模型一份只读的现状：报告 + 片段清单 + 最近审计。"""
     script = [

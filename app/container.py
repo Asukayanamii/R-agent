@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.runner import AgentRunner, StubRunner
-from app.common.config import PROJECT_ROOT
+from app.common.config import PROJECT_ROOT, library_paths
 from app.kernel import ConsoleExporter, Context, LoggingExporter
 from app.kernel.paths import set_root
 from app.web.service.chat_service import ChatService
@@ -75,6 +75,12 @@ async def _load_plugins(ctx: Context) -> None:
 
     # 界面类接缝（ctx.assets）：界面插件把静态资产挂到这张表上，装卸都不动路由表
     AssetRegistry(ctx)
+
+    # 库在哪：打包后最容易问的一个问题，启动时就摆出来（配置项的答案在用户配置里）
+    logger.info(
+        "库位置：%s",
+        "；".join(f"{name} {path}" for name, path in library_paths().items()),
+    )
 
     # 必需：存储（checkpointer + 索引 + 审计，先上，别的都建在它上面）、模型与重试
     # （loop 的模型调用链靠它们；没配 key 时模型插件给占位实现）、协议（wire 形状与编码）、

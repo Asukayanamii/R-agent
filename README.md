@@ -592,6 +592,49 @@ python run_desktop.py
 
 窗口端口由系统分配，不会和已在跑的 8000 冲突；窗口关闭时后端一并退出。
 
+工具"没做成"失败由 `app/agent/tool_calls.py` 收成 `status=error` 的回执（连异常也是）；工具输出在出口过一遍**密钥遮蔽**（按环境变量名认：`*_KEY` / `*_TOKEN` / `*_SECRET` / …）——否则模型一句 `env | grep` 就能把 `LLM_API_KEY` 打进对话、进而发给模型服务。
+
+## 打包（PyInstaller）
+
+```bash
+pip install pyinstaller
+pyinstaller --clean --noconfirm packaging/r-agent.spec
+```
+
+产出 `dist/r-agent/`（onedir；Windows 上是 `r-agent.exe`）：
+
+```bash
+dist/r-agent/r-agent.exe            # 桌面窗口（需要 pywebview：pip install -r requirements-desktop.txt）
+dist/r-agent/r-agent.exe --serve    # 只跑后端；日志给出 http://127.0.0.1:<端口>/ui/
+dist/r-agent/r-agent.exe --serve --port 8123
+```
+
+spec 里显式带上两类**包内数据**（PyInstaller 只自动收 `.py`）：内置前端的静态资产、
+内置技能库。漏了它们的表现恰好是"前端 404 / 技能索引为空"。
+
+### 打包后：库在哪、配置在哪
+
+安装目录只放程序，**可写的东西全在用户目录**：
+
+| 东西 | 默认位置 | 用哪个配置项改 |
+| --- | --- | --- |
+| 全局插件库 | `~/.my_agent/plugins` | `PLUGINS_DIR` |
+| 全局技能库 | `~/.my_agent/skills` | `SKILLS_DIR` |
+| 会话/审计库 | `~/.my_agent/data/checkpoints.db` | `SQLITE_PATH` |
+| 用户配置 | `~/.my_agent/.env` | 首次启动自动生成（**每行都注释掉**的模板：要改哪项就取消注释） |
+| 部署配置 | 可执行文件旁边的 `.env` | 便携部署：库位置、插件开关放这里 |
+
+优先级：**真环境变量 > 用户配置 > 安装目录旁的 `.env` > 代码默认值**。
+
+启动日志第二行把五处位置全部打出来——"我的库到底在哪"不用猜：
+
+```
+库位置：应用目录 <安装目录>；用户配置 ~/.my_agent/.env；全局插件库 …；全局技能库 …；会话库 …
+```
+
+源码运行时默认值不变（`./data`、`~/.my_agent/plugins`），**打包形态才把默认落点换到用户目录**
+（安装目录不该被写）。
+
 ## 命令行验证
 
 ```bash

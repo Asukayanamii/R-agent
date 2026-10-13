@@ -203,9 +203,11 @@ class GraphTools(Service):
             fail('没有插件库服务（PLUGINS_ENABLED=0 或服务 `plugins` 缺席），自改图不可用')
 
         suffix = '.py' if kind == 'install_plugin' else '.json'
-        target = plugins_dir() / f'{name}{suffix}'
+        # 名字里已经带了后缀就别再加一个（真跑里模型传 "panel.py" → 落盘成 "panel.py.py"）
+        stem = name[:-len(suffix)] if name.endswith(suffix) else name
+        target = plugins_dir() / f'{stem}{suffix}'
         if kind == 'add_fragment':
-            text = _normalized(name, text, self._service_ctx)
+            text = _normalized(stem, text, self._service_ctx)
 
         _write(target, text)
         decision = _ask(
