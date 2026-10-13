@@ -1061,7 +1061,29 @@ function workspaceLabel(ws) {
 /* 折叠状态存 localStorage：和 Open WebUI 一样，折起来是用户的选择，
    刷新页面、重启应用都该保留。 */
 const COLLAPSE_KEY = "ws-collapsed";
-let collapsedWs = new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "[]"));
+
+/* localStorage 是"别人的地盘"：值可能被旧版本或别的东西写坏，隐私模式下写入还会直接抛。
+   读在脚本顶层，一次 JSON.parse 抛错就是整个脚本不执行——界面全白，还没有任何提示。
+   所以读取一律兜底，写入一律吞掉失败（记不住偏好远好过点一下折叠就崩）。 */
+function recall(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : JSON.parse(raw);
+  } catch (err) {
+    console.warn(`[my-agent] localStorage.${key} 读取失败，用默认值`, err);
+    return fallback;
+  }
+}
+function remember(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    console.warn(`[my-agent] localStorage.${key} 写入失败（本次会话内仍然生效）`, err);
+  }
+}
+
+const savedCollapsed = recall(COLLAPSE_KEY, []);
+let collapsedWs = new Set(Array.isArray(savedCollapsed) ? savedCollapsed : []);
 
 /* 工作区目录可能已经不在了（临时目录被系统清掉、项目被删）。这种组点「+」
    必然失败，所以失败过一次就记下来：不再给加号，直接在标题上写明原因。
@@ -1071,7 +1093,7 @@ const staleWs = new Set();
 function toggleWorkspace(ws) {
   if (collapsedWs.has(ws)) collapsedWs.delete(ws);
   else collapsedWs.add(ws);
-  localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...collapsedWs]));
+  remember(COLLAPSE_KEY, [...collapsedWs]);
   renderThreads();
 }
 
@@ -1801,6 +1823,19 @@ async function drainOutbox() {
    发送 / 继续
    ============================================================ */
 
+/* 会话 id。crypto.randomUUID 只在**安全上下文**（https 或 localhost）里有；
+   从别的机器用 http 打开 /ui 时它是 undefined，直接调用会让这一轮在建会话处就抛错。
+   copyText 早就按这个前提做了退化，这里同样补上。 */
+function newId() {
+  if (globalThis.crypto && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID().replace(/-/g, "");
+  }
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /* 运行中按钮变"停止"（Esc 同效）：中断的是这一轮，不是会话 */
 function setRunButton(running) {
   sendBtn.textContent = running ? "■" : "↑";
@@ -1828,49 +1863,92 @@ function finishTurn(ctx) {
   ctx.interrupted();
 }
 
+/* 等这一轮收尾的排队处。
+
+   确认卡片的点击**不能**因为"这一刻 busy 还挂着"就被丢掉：interrupt 和 done 是两帧，
+   中间、以及收尾里刷新列表那段时间，busy 都还是 true，而那时卡片已经画在屏幕上了
+   （resume 里的 `if (busy) return` 会静默吃掉这次点击，选项按钮却已经被删掉——
+   那个会话就再也没地方点了）。所以这里等闸门放开，按点击顺序依次继续。 */
+let idleWaiters = [];
+
+function waitIdle() {
+  if (!busy) return Promise.resolve();
+  return new Promise((resolve) => idleWaiters.push(resolve));
+}
+
+/* busy 复位后必须调一次：把等在闸门上的点击放行 */
+function releaseIdle() {
+  const waiters = idleWaiters;
+  idleWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
 /* 一轮的公共外壳：建会话（含绑定工作区）、占位、跑流、收尾。
    message 是界面上显示的那条（技能调用显示命令本身，不显示整份正文）；
-   call 决定走哪个入口。 */
+   call 决定走哪个入口。
+
+   整个"准备"阶段也在 try 里：它以前在 try 外面，一旦在这里抛（最现实的一种是
+   非安全上下文里没有 crypto.randomUUID），busy 会永久停在 true——发送按钮一直是"停止"，
+   Enter 只会把消息排队，界面再也发不出东西。闸门必须无论如何都复位。 */
 async function runTurn(message, call) {
   busy = true;
   setRunButton(true);
 
-  if (!threadId) {
-    threadId = crypto.randomUUID().replace(/-/g, "");
-    // 新会话一定有归属：没挑过就用默认工作区（应用所在目录），它和别的工作区同类。
-    // 绑定必须在开跑之前：失败就别发，否则 agent 会带着错误的沙箱边界执行。
-    // 这时输入框的字还没清，可以重试。
-    const ws = pendingWs || (defaultWs && defaultWs.path) || "";
-    if (ws) {
-      try {
-        await bindWorkspace(threadId, ws);
-      } catch (err) {
-        threadId = null;
-        busy = false;
-        setRunButton(false);
-        showError(`工作区 ${ws} 不可用：${err.message || err}`);
-        input.focus();
-        return;
+  let ctx = null;
+  let draft = input.value; // 入口就抓住草稿：这一轮没能开始的话原样还回去
+  try {
+    if (!threadId) {
+      threadId = newId();
+      // 新会话一定有归属：没挑过就用默认工作区（应用所在目录），它和别的工作区同类。
+      // 绑定必须在开跑之前：失败就别发，否则 agent 会带着错误的沙箱边界执行。
+      // 这时输入框的字还没清，可以重试。
+      const ws = pendingWs || (defaultWs && defaultWs.path) || "";
+      if (ws) {
+        try {
+          await bindWorkspace(threadId, ws);
+        } catch (err) {
+          threadId = null;
+          showError(`工作区 ${ws} 不可用：${err.message || err}`);
+          input.focus();
+          return; // finally 照样把 busy 与按钮复位
+        }
       }
     }
-  }
 
-  input.value = "";
-  input.style.height = "auto";
-  addUserTurn(message);
-  const ctx = newTurn();
-  try {
+    // 输入框在**同步阶段**就清掉：绑定工作区是网络往返，那段时间里输入框里还留着同一个字，
+    // 而 busy 已经是 true 了——用户以为没发出去、再按一次 Enter，同一条消息就被排进待发送，
+    // 本轮跑完又发一遍。清空也顺手把草稿还回输入框，任一步失败都不丢。
+    draft = input.value;
+    input.value = "";
+    resizeInput();
+    addUserTurn(message);
+    ctx = newTurn();
     currentRun = new AbortController();
     await call(threadId, ctx);
   } catch (err) {
-    handleStreamError(err, ctx);
+    if (ctx) handleStreamError(err, ctx);
+    else {
+      // 还没开跑就出错：别只留一条控制台报错，界面得说出发生了什么，草稿也得还回去
+      console.error("[my-agent] 这一轮没能开始", err);
+      showError(`这一轮没能开始：${err.message || err}`);
+      input.value = draft;
+      resizeInput();
+      input.focus();
+    }
   } finally {
     currentRun = null;
-    finishTurn(ctx);
-    await loadThreads();
     busy = false;
     setRunButton(false);
+    // 收尾必须在放行之前：waitIdle 的等待者接着就要开新的一轮，
+    // "已中断"那句说明得先落到这一轮的正文里
+    if (ctx) finishTurn(ctx);
+    releaseIdle();
     input.focus();
+    try {
+      await loadThreads();
+    } catch (err) {
+      console.warn("[my-agent] 刷新会话列表失败", err);
+    }
     await drainOutbox();
   }
 }
@@ -1907,7 +1985,10 @@ async function send(text, fromOutbox = false) {
 }
 
 async function resume(value) {
-  if (busy || !threadId) return;
+  if (!threadId) return;
+  // 还在跑就等它收完尾，而不是把这次点击丢掉（见 waitIdle）
+  await waitIdle();
+  if (!threadId) return;
   busy = true;
   setRunButton(true);
 
@@ -1920,10 +2001,15 @@ async function resume(value) {
   } finally {
     currentRun = null;
     finishTurn(ctx);
-    await loadThreads();
     busy = false;
     setRunButton(false);
     input.focus();
+    releaseIdle();
+    try {
+      await loadThreads();
+    } catch (err) {
+      console.warn("[my-agent] 刷新会话列表失败", err);
+    }
     await drainOutbox();
   }
 }
@@ -2117,7 +2203,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && busy) { e.preventDefault(); stopRun(); }
 });
 
+/* 中文/日文输入法：候选词未上屏时按 Enter 是在"确认选词"，isComposing 为真。
+   不认这个标志的话，用拼音打字的人每选一次词就发出一条半截消息。 */
+const composing = (e) => e.isComposing || e.keyCode === 229;
+
 input.addEventListener("keydown", (e) => {
+  if (composing(e)) return;
   // 菜单开着时先归菜单：↑↓ 选项、Tab/Enter 执行、Esc 收起。收了 Esc 就不再往下传，
   // 免得同时触发"停止当前这一轮"。
   if (cmdItems.length) {
@@ -2138,10 +2229,16 @@ input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
 input.addEventListener("input", () => {
-  input.style.height = "auto";
-  input.style.height = Math.min(input.scrollHeight, 190) + "px";
+  resizeInput();
   renderCmds();
 });
+
+/* 输入框高度跟着内容走。清空 value 不会让高度自己缩回去——textarea 之前被撑到
+   好几行高，留着那块空白会让"发完了"看起来像"还欠着什么"。 */
+function resizeInput() {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 190) + "px";
+}
 
 /* 开始一条还没落库的新对话。工作区只记在前端——发第一条消息时才绑到会话上，
    所以"选了目录又不用"不会在库里留下任何东西（旧版会先造一条空会话）。 */
@@ -2410,14 +2507,24 @@ document.getElementById("themeBtn").onclick = () => {
   const root = document.documentElement;
   const next = root.dataset.theme === "dark" ? "light" : "dark";
   root.dataset.theme = next;
-  localStorage.setItem("theme", next);
+  try {
+    localStorage.setItem("theme", next);
+  } catch (err) {
+    console.warn("[my-agent] 主题偏好写不进 localStorage（本次会话内仍然生效）", err);
+  }
 };
 
 /* 启动：会话列表从服务端拉，直接打开最近一次会话 */
-const savedTheme = localStorage.getItem("theme");
-if (savedTheme) document.documentElement.dataset.theme = savedTheme;
-
-localStorage.removeItem("threads");
+try {
+  const savedTheme = localStorage.getItem("theme");
+  if (savedTheme === "dark" || savedTheme === "light") {
+    document.documentElement.dataset.theme = savedTheme;
+  }
+  // 早期版本把会话清单存在 localStorage 里，现在清单只有服务端一个来源，清掉残留
+  localStorage.removeItem("threads");
+} catch (err) {
+  console.warn("[my-agent] localStorage 不可用，用默认主题", err);
+}
 
 (async () => {
   await loadThreads();
