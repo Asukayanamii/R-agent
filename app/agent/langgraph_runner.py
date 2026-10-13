@@ -76,7 +76,8 @@ class LangGraphRunner:
     ) -> AsyncIterator[BaseModel]:
         inputs = {"messages": [HumanMessage(content=message)]}
         config = self._config(thread_id, workspace)
-        async with self.runtime.lease(thread_id) as version:
+        # workspace 同时是**插件作用域**：租约按它取对应那套图（工作区插件库，见 §5.1）
+        async with self.runtime.lease(thread_id, scope=workspace or '') as version:
             snapshot = await version.graph.aget_state(config)
             for notice in self._change_notices(version, snapshot.values or {}):
                 yield notice
@@ -112,7 +113,7 @@ class LangGraphRunner:
         self, thread_id: str, value: str, workspace: str | None = None
     ) -> AsyncIterator[BaseModel]:
         config = self._config(thread_id, workspace)
-        async with self.runtime.lease(thread_id) as version:
+        async with self.runtime.lease(thread_id, scope=workspace or '') as version:
             snapshot = await version.graph.aget_state(config)
             if not snapshot.interrupts:
                 yield ErrorEvent(
@@ -122,7 +123,7 @@ class LangGraphRunner:
             # 兼容判定：待确认中断所在节点必须在当前版本里。结构换过以后，把一个已经
             # 不在图里的位置接着跑只会得到含糊的报错——这里停下来把话说明白。
             interrupted = [task.name for task in snapshot.tasks if task.interrupts]
-            missing = self.runtime.versions.missing_nodes(interrupted)
+            missing = self.runtime.registry(workspace or '').missing_nodes(interrupted)
             if missing:
                 yield ErrorEvent(
                     data=ErrorData(

@@ -203,39 +203,33 @@ async def _build_runner(ctx: Context, auditor: Any = None) -> AgentRunner:
         on_version=auditor.record if auditor is not None else None,
     )
     await runtime.setup()
-    await _start_discovery(ctx)
     return LangGraphRunner(runtime, ctx.get("protocol"), _compaction_settings(ctx))
 
 
-async def _start_discovery(ctx: Context) -> None:
-    """两级插件库的发现与信任（§5.1）：全局库装载即信任，工作区库默认关、按文件批准。"""
-    from app.common.config import (
-        PLUGINS_DIR,
-        PLUGINS_ENABLED,
-        PLUGINS_WORKSPACE,
-        PLUGIN_WATCH,
-    )
-    from app.plugins.discover import PluginDiscovery
+async def _build_libraries(ctx: Context):
+    """两级插件库（全局 + 按会话工作区）：返回管理器；没启用返回 None。"""
+    from app.common.config import PLUGINS_DIR, PLUGINS_ENABLED, PLUGINS_WORKSPACE, PLUGIN_WATCH
+    from app.plugins.discover import PluginLibraries
 
     if not PLUGINS_ENABLED:
         logger.info("插件发现已关闭（PLUGINS_ENABLED=0）：只有内置插件参与装配")
-        return
+        return None
 
-    discovery = PluginDiscovery(
+    libraries = PluginLibraries(
         ctx,
         global_dir=PLUGINS_DIR,
-        workspace=PLUGINS_WORKSPACE or None,
+        workspace_enabled=PLUGINS_WORKSPACE,
         watch=PLUGIN_WATCH,
     )
-    report = await discovery.start()
+    await libraries.start()
     logger.info(
-        "插件发现：全局库 %s；工作区库 %s（%s）；热重载 %s——%s",
+        "插件库：全局目录 %s；工作区库 %s；热重载 %s——%s",
         PLUGINS_DIR or "（未配置）",
-        PLUGINS_WORKSPACE or "未启用（默认关）",
-        f"授权清单 {PLUGINS_WORKSPACE}/.my_agent/plugins.json" if PLUGINS_WORKSPACE else "不扫",
+        "开（按会话工作区分域，各自一套图版本）" if PLUGINS_WORKSPACE else "关（PLUGINS_WORKSPACE=0）",
         "开（内容指纹轮询，回合边界生效）" if PLUGIN_WATCH else "关（只扫启动那一次）",
-        report.render(),
+        libraries.loaded_summary(),
     )
+    return libraries
 
 
 async def startup() -> None:
@@ -271,6 +265,15 @@ async def startup() -> None:
 
     runner = await _build_runner(ctx, versions)
     _provide(ctx, "runner", runner)
+
+    # 插件库在 runner **之后**：骨架（loop）要先在架子上——片段是照着锚点表校验的。
+    # `on_scope` 装到 runtime 上（stub 模式没有 runtime，整段跳过）。
+    libraries = await _build_libraries(ctx)
+    runtime = getattr(runner, "runtime", None)
+    if libraries is not None:
+        _provide(ctx, "plugins", libraries)
+        if runtime is not None:
+            runtime.on_scope = libraries.ensure
     checkpointer = getattr(runner, "checkpointer", None)
     if checkpointer is not None:
         _provide(ctx, "checkpointer", checkpointer)

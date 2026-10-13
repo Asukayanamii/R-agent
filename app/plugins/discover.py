@@ -22,13 +22,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
+import os
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from app.harness.composer import PLUGIN_SCOPE
 from app.harness.fragment import StructureError, fragment_from_dict
 from app.kernel import Context
 
@@ -41,6 +44,51 @@ SUFFIXES = ('.py', '.json')
 
 SOURCE_GLOBAL = '全局'
 SOURCE_WORKSPACE = '工作区'
+
+MAX_WORKSPACES = 8
+"""同时保留几个工作区的插件库（LRU 卸载最久没用的那个）。与 `runtime.MAX_SCOPES` 同一数量级。"""
+
+
+def trust_path(workspace: str | Path) -> Path:
+    """工作区授权清单的位置（与 `app/agent/sandbox.py` 的硬阻断指向同一个文件）。"""
+    return Path(workspace) / CONFIG_DIR / TRUST_FILE
+
+
+def trusted_files(workspace: str | Path | None) -> set[str]:
+    """授权清单里的文件名；清单不存在/读不了 = 一个都没批准（默认关）。"""
+    if workspace is None:
+        return set()
+    path = trust_path(workspace)
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return set()
+    except (OSError, json.JSONDecodeError) as error:
+        logger.warning('工作区插件授权清单读不了，按"一个都没批准"处理 %s：%s', path, error)
+        return set()
+    trusted = payload.get('trusted') if isinstance(payload, dict) else None
+    if not isinstance(trusted, list):
+        logger.warning('工作区插件授权清单格式不对（要 {"trusted": [文件名, ...]}）：%s', path)
+        return set()
+    return {item for item in trusted if isinstance(item, str)}
+
+
+def write_trust(workspace: str | Path, names: set[str]) -> None:
+    """写授权清单（排序保证 diff 稳定）。**只有服务端能调**——那份文件在沙箱里是硬阻断区。"""
+    path = trust_path(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {'trusted': sorted(names)}
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+
+def scope_of(workspace: str | Path) -> str:
+    """作用域键 = 规范化的工作区路径（折叠大小写与分隔符；Windows 下同一目录只有一把钥匙）。"""
+    path = Path(workspace).expanduser()
+    try:
+        path = path.resolve()
+    except OSError:
+        pass
+    return os.path.normcase(str(path))
 
 
 @dataclass
@@ -78,16 +126,24 @@ class PluginDiscovery:
         *,
         global_dir: str | Path | None = None,
         workspace: str | Path | None = None,
+        scope: str = '',
         watch: bool = True,
         interval: float = 1.0,
     ) -> None:
         self.ctx = ctx
         self.global_dir = Path(global_dir) if global_dir else None
         self.workspace = Path(workspace) if workspace else None
+        self.scope = scope
+        """这批文件属于哪个作用域（空串 = 全局）。片段与插件名都带上它，两个工作区互不干扰。"""
         self.watch = watch
         self.interval = interval
         self._loaded: dict[Path, tuple[Any, str]] = {}
         self.last_report = DiscoveryReport()
+
+    @property
+    def active(self) -> bool:
+        """当前是否有装载着的插件（`ensure` 据此决定"要不要单独成图"）。"""
+        return bool(self._loaded)
 
     # ------------------------------------------------------------------ 对外
 
@@ -166,21 +222,7 @@ class PluginDiscovery:
 
     def _trusted(self) -> set[str]:
         """工作区授权清单里的文件名；清单不存在/读不了 = 一个都没批准（默认关）。"""
-        path = self.workspace / CONFIG_DIR / TRUST_FILE if self.workspace else None
-        if path is None:
-            return set()
-        try:
-            payload = json.loads(path.read_text(encoding='utf-8'))
-        except FileNotFoundError:
-            return set()
-        except (OSError, json.JSONDecodeError) as error:
-            logger.warning('工作区插件授权清单读不了，按"一个都没批准"处理 %s：%s', path, error)
-            return set()
-        trusted = payload.get('trusted') if isinstance(payload, dict) else None
-        if not isinstance(trusted, list):
-            logger.warning('工作区插件授权清单格式不对（要 {"trusted": [文件名, ...]}）：%s', path)
-            return set()
-        return {item for item in trusted if isinstance(item, str)}
+        return trusted_files(self.workspace) if self.workspace else set()
 
     # ------------------------------------------------------------------ 装载
 
@@ -233,7 +275,7 @@ class PluginDiscovery:
             payload = json.loads(path.read_text(encoding='utf-8'))
         except json.JSONDecodeError as error:
             raise StructureError('DECL_JSON', f'{path.name} 不是合法 JSON：{error}') from error
-        fragment = fragment_from_dict(payload, source=path.name)
+        fragment = fragment_from_dict(payload, source=path.name, scope=self.scope)
         for node in fragment.nodes:
             if self.ctx.get(node.interface) is None and node.interface != 'stamp':
                 raise StructureError(
@@ -245,10 +287,18 @@ class PluginDiscovery:
         def apply(ctx: Context, config: Any = None, fragment=fragment) -> None:
             ctx.structure.contribute(fragment)
 
-        return {'apply': apply, 'name': f'plugin-file/{path.name}'}
+        return {'apply': apply, 'name': self._plugin_name(path)}
+
+    def _plugin_name(self, path: Path) -> str:
+        """插件名带上作用域：两个工作区里有同名文件也不冲突（内核按名字认插件）。"""
+        return f'plugin-file/{self.scope or "global"}/{path.name}'
 
     def _python_plugin(self, path: Path) -> Any:
-        """源码直读编译执行：不走 import 缓存，热重载才看得见改动（与内核 loader 同一手法）。"""
+        """源码直读编译执行：不走 import 缓存，热重载才看得见改动（与内核 loader 同一手法）。
+
+        `.apply` 外面包一层**作用域标记**（`PLUGIN_SCOPE`）：插件自己 `contribute(fragment)`
+        时不必知道"我在哪个工作区"，由这里定。
+        """
         source = path.read_text(encoding='utf-8')
         module = types.ModuleType(f'plugin_file_{path.stem}')
         module.__file__ = str(path)
@@ -256,7 +306,42 @@ class PluginDiscovery:
         plugin = getattr(module, 'plugin', None)
         if plugin is None:
             raise StructureError('DECL_PLUGIN', f'{path.name} 里没有 plugin 对象')
-        return plugin
+        if not self.scope or not isinstance(plugin, dict) or 'apply' not in plugin:
+            return plugin
+        return {**plugin, 'apply': self._scoped(plugin['apply'])}
+
+    def _scoped(self, apply: Any) -> Any:
+        """把插件的作用域在装载期标进 `PLUGIN_SCOPE`（同步/异步 apply 都覆盖）。"""
+        scope = self.scope
+
+        async def run_async(coro: Any) -> Any:
+            token = PLUGIN_SCOPE.set(scope)
+            try:
+                return await coro
+            finally:
+                PLUGIN_SCOPE.reset(token)
+
+        def wrapper(ctx: Context, config: Any = None) -> Any:
+            token = PLUGIN_SCOPE.set(scope)
+            try:
+                result = apply(ctx, config)
+            except BaseException:
+                PLUGIN_SCOPE.reset(token)
+                raise
+            if inspect.isawaitable(result):
+                return run_async(result)
+            PLUGIN_SCOPE.reset(token)
+            return result
+
+        return wrapper
+
+    async def dispose(self) -> DiscoveryReport:
+        """卸载全部（LRU 回收 / 停机）：与"删文件"走同一条路——撤销贡献、释放 fiber。"""
+        report = DiscoveryReport()
+        for path in list(self._loaded):
+            await self._unload(path, report)
+        self.last_report = report
+        return report
 
     # ------------------------------------------------------------------ 热重载
 
@@ -270,3 +355,158 @@ class PluginDiscovery:
                 continue
             if report.changed:
                 logger.info('插件热重载（下一回合边界生效）：%s', report.render())
+
+
+class PluginLibraries:
+    """按作用域装载插件库：全局库（作用域 `''`）+ 每个会话工作区各自的库（按需、LRU）。
+
+    - **一个**轮询任务扫全部已登记的工作区（内容指纹，逻辑复用 `PluginDiscovery.scan`）；
+    - `ensure(workspace)` 是回合边界上的入口：登记/取用该工作区的库，返回**规范化作用域**——
+      空串表示"这个工作区没有自己的插件"，会话照旧共用全局那张图（省掉一个没人用的版本账本）；
+    - 信任清单按工作区各自一份：A 批准的不等于 B 批准；`trust()` 是**服务端**写清单的唯一入口
+      （那份文件在沙箱里是硬阻断区，agent 自己写不了）；
+    - 超过 `max_workspaces` 时卸载最久没用过的那个工作区的库（撤销它的片段贡献与 fiber）。
+    """
+
+    def __init__(
+        self,
+        ctx: Context,
+        *,
+        global_dir: str | Path | None = None,
+        workspace_enabled: bool = False,
+        watch: bool = True,
+        interval: float = 1.0,
+        max_workspaces: int = MAX_WORKSPACES,
+    ) -> None:
+        self.ctx = ctx
+        self.global_dir = Path(global_dir) if global_dir else None
+        self.workspace_enabled = workspace_enabled
+        self.watch = watch
+        self.interval = interval
+        self.max_workspaces = max(1, max_workspaces)
+        self._global: PluginDiscovery | None = None
+        self._workspaces: dict[str, PluginDiscovery] = {}
+        self._order: list[str] = []
+        """LRU：最近用过的排最后。"""
+        self.last_report = DiscoveryReport()
+
+    # ------------------------------------------------------------------ 对外
+
+    async def start(self) -> DiscoveryReport:
+        """装载全局库（有的话）；`watch=True` 时挂上唯一的轮询任务（归当前 fiber）。"""
+        if self.global_dir is not None:
+            self._global = PluginDiscovery(
+                self.ctx, global_dir=self.global_dir, scope='', watch=False, interval=self.interval
+            )
+            self.last_report = await self._global.scan()
+        if self.watch:
+            self.ctx.spawn(self._scan_loop)
+        return self.last_report
+
+    async def ensure(self, workspace: str) -> str:
+        """登记/取用该工作区的插件库；返回规范化作用域（`''` = 不用单独成图）。
+
+        热路径：已登记的工作区只做一次字典查找（扫描由轮询任务负责，~1 秒的迟到与
+        热重载本身的口径一致）；批准走 `trust()`，那边会**立刻**扫一次。
+        """
+        if not self.workspace_enabled or not workspace:
+            return ''
+        canonical = scope_of(workspace)
+        discovery = self._workspaces.get(canonical)
+        if discovery is None:
+            discovery = await self._register(workspace, canonical)
+        self._touch(canonical)
+        self._evict()
+        return canonical if discovery.active else ''
+
+    async def _register(self, workspace: str, canonical: str) -> PluginDiscovery:
+        discovery = PluginDiscovery(
+            self.ctx,
+            workspace=Path(workspace),
+            scope=canonical,
+            watch=False,
+            interval=self.interval,
+        )
+        report = await discovery.scan()
+        if report.changed:
+            logger.info('工作区插件库（%s）：%s', canonical, report.render())
+        self._workspaces[canonical] = discovery
+        return discovery
+
+    async def trust(self, workspace: str, filename: str) -> bool:
+        """把某个文件写进该工作区的信任清单（保留已有条目）；返回是否新写入。
+
+        服务端专用：`web/api`（或 `graph_tools` 插件）在人工确认之后调它。
+        批准**立刻装载**（生效仍在下一个回合边界）——不然要等轮询那一秒，用时序换来的
+        "差不多"是最难查的那种 bug。
+        """
+        names = trusted_files(workspace)
+        if filename in names:
+            return False
+        write_trust(workspace, names | {filename})
+        logger.info('工作区插件已批准：%s（%s）', filename, scope_of(workspace) or workspace)
+
+        canonical = scope_of(workspace)
+        discovery = self._workspaces.get(canonical) or await self._register(workspace, canonical)
+        report = await discovery.scan()
+        if report.changed:
+            logger.info('工作区插件库（%s）：%s', canonical, report.render())
+        self._touch(canonical)
+        return True
+
+    def loaded_summary(self) -> str:
+        """一行摘要（日志用）：全局装载情况 + 已登记的工作区数。"""
+        parts: list[str] = []
+        if self._global is not None:
+            parts.append(f'全局库 {self._global.last_report.render()}')
+        if self._workspaces:
+            active = sum(1 for item in self._workspaces.values() if item.active)
+            parts.append(f'工作区库已登记 {len(self._workspaces)} 个（其中 {active} 个有插件）')
+        elif not self.workspace_enabled:
+            parts.append('工作区库未启用（PLUGINS_WORKSPACE=0）')
+        return '；'.join(parts)
+
+    # ------------------------------------------------------------------ 内部
+
+    def _touch(self, canonical: str) -> None:
+        if canonical in self._order:
+            self._order.remove(canonical)
+        self._order.append(canonical)
+
+    def _evict(self) -> None:
+        """超上限就回收最久没用过的那个工作区（卸载异步做，不卡住本次 ensure）。"""
+        while len(self._workspaces) > self.max_workspaces and self._order:
+            oldest = self._order.pop(0)
+            discovery = self._workspaces.pop(oldest, None)
+            if discovery is not None:
+                self.ctx.spawn(self._drop(discovery, oldest))
+
+    async def _drop(self, discovery: PluginDiscovery, canonical: str) -> None:
+        try:
+            report = await discovery.dispose()
+        except Exception as error:  # noqa: BLE001 - 回收失败不该带走进程
+            logger.warning('工作区插件库回收失败 %s：%s', canonical, error)
+            return
+        logger.info('工作区插件库已回收（LRU）：%s——%s', canonical, report.render())
+
+    async def _scan_loop(self) -> None:
+        """唯一的看门狗：全局库 + 全部已登记的工作区库各扫一遍。"""
+        while True:
+            await asyncio.sleep(self.interval)
+            targets = [
+                item
+                for item in [self._global, *self._workspaces.values()]
+                if item is not None
+            ]
+            for discovery in targets:
+                try:
+                    report = await discovery.scan()
+                except Exception as error:  # noqa: BLE001 - 一个坏目录不该停掉看门狗
+                    logger.warning('插件热重载扫描失败：%s', error)
+                    continue
+                if report.changed:
+                    logger.info(
+                        '插件热重载（下一回合边界生效）%s：%s',
+                        discovery.scope or '全局',
+                        report.render(),
+                    )

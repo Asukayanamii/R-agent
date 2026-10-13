@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from langgraph.errors import GraphBubbleUp
 
-__all__ = ['FailureLedger', 'FailureRecord', 'append_failures', 'wrap_node']
+__all__ = ['FailureLedger', 'FailureRecord', 'append_failures', 'fail_key', 'wrap_node']
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,15 @@ class FailureRecord:
     at: str
 
 
+def fail_key(fragment_id: str, scope: str = '') -> str:
+    """熔断账本里的键：全局片段就是 id，作用域内的片段要带上前缀。
+
+    不带前缀的话，两个工作区里同名的片段会互相带崩（一个工作区连续失败，
+    另一个工作区的同名片段也被停用）。报告里照原样显示这个键——能看出是哪个工作区。
+    """
+    return f'{scope}|{fragment_id}' if scope else fragment_id
+
+
 class FailureLedger:
     """片段级的失败账本：连续计数、熔断名单、最近的记录。"""
 
@@ -64,7 +73,10 @@ class FailureLedger:
         """熔断名单的版本号：每次新增停用 +1——重合成要看它（结构变化的一种）。"""
 
     def record(self, fragment_id: str, node: str, error: BaseException) -> FailureRecord:
-        """记一次失败；达到阈值即把片段列入熔断（返回这条记录）。"""
+        """记一次失败；达到阈值即把片段列入熔断（返回这条记录）。
+
+        `fragment_id` 走 `fail_key()` 生成的**作用域限定键**（全局片段就是裸 id）。
+        """
         count = self.counts.get(fragment_id, 0) + 1
         self.counts[fragment_id] = count
         record = FailureRecord(

@@ -168,6 +168,11 @@ class Fragment:
     output_seams: tuple[str, ...] = ()
     anchors: tuple[str, ...] = ()
     """仅 role="base"：它提供的锚点表（入站锚点 + 触发频率由骨架自己声明）。"""
+    scope: str = ''
+    """作用域：空串 = 全局（内置插件那套图）；非空 = 会话工作区（工作区插件库）。
+
+    作用域只影响"谁能看见它"：合成按 `scope` 过滤（全局片段人人可见），
+    校验（重名/节点名）也按作用域分开做——两个工作区可以有同名片段。"""
 
 
 def _names(value: Any, fragment_id: str, node_name: str, field: str) -> tuple[str, ...]:
@@ -180,7 +185,9 @@ def _names(value: Any, fragment_id: str, node_name: str, field: str) -> tuple[st
     return tuple(value)
 
 
-def fragment_from_dict(payload: Mapping[str, Any], *, source: str = '') -> Fragment:
+def fragment_from_dict(
+    payload: Mapping[str, Any], *, source: str = '', scope: str = ''
+) -> Fragment:
     """
     把**纯数据**（JSON 声明）翻成 Fragment——插件库里的 `.json` 形态（§5.1）。
 
@@ -259,6 +266,7 @@ def fragment_from_dict(payload: Mapping[str, Any], *, source: str = '') -> Fragm
         order=order,
         nodes=tuple(nodes),
         channels=tuple(channels),
+        scope=scope,
     )
 
 

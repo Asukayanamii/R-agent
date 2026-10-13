@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Annotated, Any, Callable, Iterable, Mapping, TypedDict
 
@@ -28,7 +29,7 @@ from langgraph.graph import END, START, StateGraph, add_messages
 
 from app.kernel import Service
 
-from app.harness.circuit import FailureLedger, wrap_node
+from app.harness.circuit import FailureLedger, fail_key, wrap_node
 from app.harness.fragment import (
     END_NODE,
     KERNEL_CHANNELS,
@@ -53,10 +54,17 @@ from app.harness.fragment import (
 __all__ = [
     'GraphVersion',
     'StructureService',
+    'PLUGIN_SCOPE',
     'compose',
     'build_state_type',
     'render_mermaid',
 ]
+
+PLUGIN_SCOPE: ContextVar[str] = ContextVar('plugin_scope', default='')
+"""装载期的默认作用域：工作区插件库在调插件的 `apply` 时设上。
+
+可编程插件（`.py`）在自己代码里 `ctx.structure.contribute(fragment)` 时不必知道
+"我在哪个工作区"——片段的作用域由装载方决定。内置插件不设，落默认值 `''`（全局）。"""
 
 
 class StructureService(Service):
@@ -65,34 +73,54 @@ class StructureService(Service):
     注册期校验在 ``contribute()`` 里立即执行——不通过 = 抛错 = 插件装载失败
     （文件留着，报明原因与改法）；片段登记为调用方 fiber 的 effect，
     插件卸载自动撤销，合成器的输入随之变化。
+
+    **作用域**：片段带 ``scope``（空串 = 全局）。合成按作用域过滤，重名与节点名校验
+    也按作用域分开——两个工作区可以有同名片段，工作区 A 批准的插件不进 B 的图。
     """
 
     def __init__(self, ctx: Any) -> None:
         super().__init__(ctx, 'structure')
         self._fragments: list[Fragment] = []
-        self.revision = 0
-        """片段集合的版本号：每次贡献/撤销 +1，调用方据此判断"要不要重新合成"。"""
+        self._revisions: dict[str, int] = {}
 
     # ---------------------------------------------------------------- 收集
+    def revision(self, scope: str = '') -> int:
+        """该作用域的结构版本号：每次贡献/撤销 +1，调用方据此判断"要不要重新合成"。"""
+        return self._revisions.get(scope, 0)
+
+    def _bump(self, scope: str) -> None:
+        self._revisions[scope] = self._revisions.get(scope, 0) + 1
+
     def contribute(self, fragment: Fragment) -> Any:
-        """贡献一个片段；返回撤销句柄（随调用方 fiber 卸载自动撤销）。"""
-        if any(item.id == fragment.id for item in self._fragments):
-            raise StructureError('FRAGMENT_DUPLICATE', f'片段 id 重复：{fragment.id!r}')
+        """贡献一个片段；返回撤销句柄（随调用方 fiber 卸载自动撤销）。
+
+        作用域来自片段自己（`fragment.scope`），或装载期由插件库设的 `PLUGIN_SCOPE`
+        ——可编程插件不必知道自己在哪个工作区。
+        """
+        if not fragment.scope:
+            scope = PLUGIN_SCOPE.get()
+            if scope:
+                fragment = replace(fragment, scope=scope)
+        if any(item.id == fragment.id and item.scope == fragment.scope for item in self._fragments):
+            where = fragment.scope or '全局'
+            raise StructureError(
+                'FRAGMENT_DUPLICATE', f'片段 id 重复：{fragment.id!r}（作用域 {where}）'
+            )
         base = self.base()
         validate_fragment_self(fragment)
         if fragment.role == ROLE_BASE and base is not None:
             raise StructureError('BASE_COUNT', f'已经有骨架（{base.id!r}）了，不能有两个')
         validate_against_base(fragment, base)
-        validate_node_names(fragment, self.node_names())
+        validate_node_names(fragment, self.node_names(fragment.scope))
 
         def install() -> Callable[[], bool]:
             self._fragments.append(fragment)
-            self.revision += 1
+            self._bump(fragment.scope)
 
             def withdraw() -> bool:
                 if fragment in self._fragments:
                     self._fragments.remove(fragment)
-                    self.revision += 1
+                    self._bump(fragment.scope)
                     return True
                 return False
 
@@ -100,17 +128,27 @@ class StructureService(Service):
 
         return self.ctx.effect(install, f'ctx.structure.contribute({fragment.id!r})')
 
-    def collect(self) -> tuple[Fragment, ...]:
-        """当前生效的片段（装载顺序；骨架排最前）。"""
+    def collect(self, scope: str | None = None) -> tuple[Fragment, ...]:
+        """当前生效的片段（装载顺序；骨架排最前）。
+
+        `scope=None` = 全部（报告与诊断用）；给 scope = **全局片段 + 该作用域的片段**
+        （合成用）——`''` 就是全局（内置插件那套图）。
+        """
+        items = self._fragments
+        if scope is not None:
+            items = [item for item in items if not item.scope or item.scope == scope]
         return tuple(
-            sorted(self._fragments, key=lambda item: 0 if item.role == ROLE_BASE else 1)
+            sorted(items, key=lambda item: 0 if item.role == ROLE_BASE else 1)
         )
 
     def base(self) -> Fragment | None:
         return next((item for item in self._fragments if item.role == ROLE_BASE), None)
 
-    def node_names(self) -> frozenset[str]:
-        return frozenset(node.name for item in self._fragments for node in item.nodes)
+    def node_names(self, scope: str | None = None) -> frozenset[str]:
+        """节点名集合；给 scope 时只算"该作用域能看见的片段"（重名校验按作用域做）。"""
+        return frozenset(
+            node.name for item in self.collect(scope) for node in item.nodes
+        )
 
 
 @dataclass
@@ -399,7 +437,7 @@ def compose(
                         'NODE_CONFLICT', f'节点名与既有结构冲突：{node.name!r}'
                     )
                 nodes[node.name] = node
-                owners[node.name] = fragment.id
+                owners[node.name] = fail_key(fragment.id, fragment.scope)
                 chain.append(node)
         if not chain:
             continue  # 只声明通道、不挂节点：合法

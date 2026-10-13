@@ -22,12 +22,15 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.kernel import Context, CordisError
 
-from app.harness.circuit import FailureLedger
+from app.harness.circuit import FailureLedger, fail_key
 from app.harness.composer import GraphVersion, StructureService, compose, render_mermaid
 from app.harness.report import CompositionReport, Mount
-from app.harness.versions import VersionRegistry
+from app.harness.versions import DEFAULT_KEEP, VersionRegistry
 
 __all__ = ['HarnessRuntime']
+
+MAX_SCOPES = 8
+"""同时保留几个作用域的版本账本（LRU）。插件 fiber 的回收在插件库那侧，同一数量级。"""
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,7 @@ class HarnessRuntime:
         base: Any = None,
         versions: VersionRegistry | None = None,
         on_version: Any = None,
+        on_scope: Any = None,
     ) -> None:
         self.ctx = ctx
         self.checkpointer = checkpointer
@@ -56,13 +60,49 @@ class HarnessRuntime:
         self.on_version = on_version
         """每次合成成功后的回调（`(version, report, reason)`，可同步可异步）：图版本审计的落点。
         装配根接到 `GraphVersionService.record`；回调抛错只记 WARNING——**审计不许带走装配**。"""
-        self.versions = versions or VersionRegistry()
+        self.on_scope = on_scope
+        """作用域准备回调（`(workspace) -> 规范化作用域`，可同步可异步）：租约开始时调用。
+        装配根接到插件库的 `ensure()`——harness 照旧不认识插件，只知道"这个作用域来了，
+        先让装配根把它那套库备好"。返回空串 = 该工作区没有自己的插件，共用全局那张图。"""
+        self._keep = versions.keep if versions is not None else DEFAULT_KEEP
+        self._registries: dict[str, VersionRegistry] = {
+            '': versions or VersionRegistry(keep=self._keep)
+        }
         self.structure = ctx.get('structure') or StructureService(ctx)
         self.failures = FailureLedger()
         self._next_version_id = 1
-        self._composed_revision = -1
-        self._composed_circuit = 0
+        self._composed_revision: dict[str, int] = {}
+        self._composed_circuit: dict[str, int] = {}
         self._loop_fiber: Any = None
+
+    @property
+    def versions(self) -> VersionRegistry:
+        """全局作用域（`''`）的版本账本——内置插件那套图，也是绝大多数调用方要的那个。"""
+        return self._registries['']
+
+    @property
+    def scopes(self) -> tuple[str, ...]:
+        """已在册的作用域（诊断用；`''` 恒在）。"""
+        return tuple(self._registries)
+
+    def registry(self, scope: str = '') -> VersionRegistry:
+        """作用域的版本账本（懒建 + LRU）：每个工作区一套 pending/current 与历史。
+
+        作用域数超过 `MAX_SCOPES` 时丢最久没用的那个账本（插件 fiber 由插件库那侧自己回收）；
+        下一次用到它会按当时的结构重新合成一个新版本。
+        """
+        found = self._registries.get(scope)
+        if found is not None:
+            return found
+        if len(self._registries) >= MAX_SCOPES:
+            oldest = next((key for key in self._registries if key not in ('', scope)), None)
+            if oldest is not None:
+                del self._registries[oldest]
+                self._composed_revision.pop(oldest, None)
+                self._composed_circuit.pop(oldest, None)
+                logger.info('作用域账本已回收（LRU）：%s', oldest)
+        self._registries[scope] = VersionRegistry(keep=self._keep)
+        return self._registries[scope]
 
     # ---------------------------------------------------------------- 装配
     async def setup(self) -> None:
@@ -111,15 +151,15 @@ class HarnessRuntime:
         toolbox = self.ctx.get('tools')
         return toolbox.names() if toolbox is not None else []
 
-    def mermaid_of(self, version: GraphVersion | None = None) -> str:
+    def mermaid_of(self, version: GraphVersion | None = None, scope: str = '') -> str:
         """某个版本图的 mermaid 源码（`graph_updated` 卡片与诊断用）。"""
-        version = version or self.versions.current
+        version = version or self.registry(scope).current
         if version is None:
             return ''
         return render_mermaid(version.graph)
 
-    async def recompose(self, reason: str = '结构变化') -> GraphVersion:
-        """按当前片段合成一个新版本，交给版本账本。
+    async def recompose(self, reason: str = '结构变化', scope: str = '') -> GraphVersion:
+        """按当前片段合成一个新版本，交给该作用域的版本账本。
 
         已被熔断（连续失败达到阈值）的片段不参与合成——"自动摘出"的落点就在这里。
 
@@ -128,8 +168,12 @@ class HarnessRuntime:
 
         ``reason`` 进审计（启动 / 结构变化 / 熔断）：事后回放要能看出"为什么换了这版图"。
         """
-        collected = self.structure.collect()
-        active = [item for item in collected if not self.failures.is_disabled(item.id)]
+        collected = self.structure.collect(scope)
+        active = [
+            item
+            for item in collected
+            if not self.failures.is_disabled(fail_key(item.id, item.scope))
+        ]
         version = compose(
             active,
             version_id=self._next_version_id,
@@ -139,14 +183,16 @@ class HarnessRuntime:
             capabilities=self.capabilities,
         )
         self._next_version_id += 1
-        self._composed_revision = self.structure.revision
-        self._composed_circuit = self.failures.revision
-        self.versions.stage(version)
-        if self.versions.current is None:
-            self.versions.apply_pending()
-        logger.info("图已合成 v%d：哈希 %s，节点 %d 个，锚点 %s",
-            version.id, version.structure_hash[:12], len(version.node_names), "、".join(version.anchors))
-        report = self.build_report(version)
+        self._composed_revision[scope] = self.structure.revision(scope)
+        self._composed_circuit[scope] = self.failures.revision
+        registry = self.registry(scope)
+        registry.stage(version)
+        if registry.current is None:
+            registry.apply_pending()
+        logger.info("图已合成 v%d%s：哈希 %s，节点 %d 个，锚点 %s",
+            version.id, f'（作用域 {scope}）' if scope else '',
+            version.structure_hash[:12], len(version.node_names), "、".join(version.anchors))
+        report = self.build_report(version, scope)
         logger.info("合成报告：\n%s", report.render())
         await self._notify(version, report, reason)
         return version
@@ -166,11 +212,13 @@ class HarnessRuntime:
     def build_report(
         self, version: GraphVersion | None = None, scope: str = ''
     ) -> CompositionReport:
-        """按当前片段集合与账本生成合成报告（日志 / `graph_updated` / inspect 共用）。"""
-        version = version or self.versions.current
-        collected = self.structure.collect()
+        """按**该作用域**的片段集合与账本生成合成报告（日志 / `graph_updated` / inspect 共用）。"""
+        version = version or self.registry(scope).current
+        collected = self.structure.collect(scope)
         active_ids = {
-            item.id for item in collected if not self.failures.is_disabled(item.id)
+            item.id
+            for item in collected
+            if not self.failures.is_disabled(fail_key(item.id, item.scope))
         }
         base = self.structure.base()
 
@@ -199,7 +247,7 @@ class HarnessRuntime:
             warnings=tuple(version.warnings) if version else (),
             scope=scope,
             # 片段集合变了但还没合成/还没到回合边界：报告不能拿"现状"冒充"正在跑的图"
-            pending_change=self._composed_revision != self.structure.revision,
+            pending_change=self._composed_revision.get(scope, -1) != self.structure.revision(scope),
         )
 
     def _pending_plugins(self) -> list[dict[str, Any]]:
@@ -216,28 +264,43 @@ class HarnessRuntime:
                 })
         return pending
 
-    async def maybe_recompose(self) -> bool:
-        """片段集合或熔断名单没变就不重合成；变了才产生新版本。返回是否合成了新版本。"""
+    async def maybe_recompose(self, scope: str = '') -> bool:
+        """该作用域的片段集合或熔断名单没变就不重合成；变了才产生新版本。
+
+        熔断的版本号是**全局**的（一次失败在任何作用域都作数），所以别的作用域熔断会让
+        这里多合成一次——正确但略有浪费，换来的是"不用给账本按作用域拆两级计数"。
+        """
         if (
-            self.versions.current is not None
-            and self._composed_revision == self.structure.revision
-            and self._composed_circuit == self.failures.revision
+            self.registry(scope).current is not None
+            and self._composed_revision.get(scope, -1) == self.structure.revision(scope)
+            and self._composed_circuit.get(scope, -1) == self.failures.revision
         ):
             return False
-        circuit_changed = self._composed_circuit != self.failures.revision
-        await self.recompose(reason='熔断' if circuit_changed else '结构变化')
+        circuit_changed = self._composed_circuit.get(scope, -1) != self.failures.revision
+        await self.recompose(reason='熔断' if circuit_changed else '结构变化', scope=scope)
         return True
 
     # ---------------------------------------------------------------- 租约
     @asynccontextmanager
-    async def lease(self, thread_id: str) -> AsyncIterator[GraphVersion]:
+    async def lease(self, thread_id: str, scope: str = '') -> AsyncIterator[GraphVersion]:
         """回合边界：先把结构/熔断的变化合成进 pending（应用在下一次租约），再钉版本。
 
+        ``scope`` 是会话工作区（`on_scope` 会把它规范化；没有插件库那套回调时一律按全局走）。
         重合成失败**不改变运行图**——记一条警告，本轮继续用当前版本（§3.1）。
         """
+        if scope and self.on_scope is not None:
+            try:
+                resolved = self.on_scope(scope)
+                if inspect.isawaitable(resolved):
+                    resolved = await resolved
+                scope = resolved or ''
+            except Exception as error:  # noqa: BLE001 - 库有问题也不该挡住本轮
+                logger.warning('作用域 %s 的插件库准备失败，本轮用已有结构：%s', scope, error)
+        elif self.on_scope is None:
+            scope = ''  # 没有按作用域装载的插件库：所有工作区共用一张图
         try:
-            await self.maybe_recompose()
+            await self.maybe_recompose(scope)
         except Exception as error:  # noqa: BLE001 - 装配失败不许带走本回合
             logger.warning("重合成失败，本轮继续用当前版本：%s", error)
-        async with self.versions.lease(thread_id) as version:
+        async with self.registry(scope).lease(thread_id) as version:
             yield version

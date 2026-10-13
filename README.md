@@ -168,7 +168,7 @@ cp .env.example .env
 | `AGENTS_ANCESTORS` | `1` | `0` 只读全局与工作区根，不向上遍历祖先目录 |
 | `PLUGINS_ENABLED` | `1` | 插件发现总开关；`0` 只装配内置插件（两级插件库都不扫） |
 | `PLUGINS_DIR` | `~/.my_agent/plugins` | 全局插件库：`.py`（可编程）/ `.json`（纯片段声明），**装载即信任** |
-| `PLUGINS_WORKSPACE` | 空 | 工作区插件所属的工作区；**留空 = 默认关**。填了才扫它的 `.my_agent/plugins/`，且每个文件要在 `<该工作区>/.my_agent/plugins.json` 的 `trusted` 里才装载 |
+| `PLUGINS_WORKSPACE` | `0` | 工作区插件库开关：`1` = 每个会话按**自己的工作区**各扫一份（作用域隔离：A 批准的插件不影响 B 的会话），每个文件要在 `<该工作区>/.my_agent/plugins.json` 的 `trusted` 里才装载 |
 | `PLUGIN_WATCH` | `1` | 内容指纹轮询热重载；`0` 只在启动时扫一次 |
 | `GRAPH_VERSIONS_KEEP` | `4` | 图版本账本保留几个历史版本（LRU，进行中的回合不回收） |
 
@@ -185,7 +185,7 @@ cp .env.example .env
 | 来源 | 位置 | 信任 |
 | --- | --- | --- |
 | 全局库 | `PLUGINS_DIR`（默认 `~/.my_agent/plugins`） | **装载即信任**（是你自己的目录） |
-| 工作区库 | `<PLUGINS_WORKSPACE>/.my_agent/plugins/` | **默认关**；每个文件要出现在 `<工作区>/.my_agent/plugins.json` 的 `trusted` 里才装载 |
+| 工作区库 | `<会话的工作区>/.my_agent/plugins/`（`PLUGINS_WORKSPACE=1` 才扫） | **按工作区各自一份清单**；每个文件要出现在 `<该工作区>/.my_agent/plugins.json` 的 `trusted` 里才装载 |
 
 两种形态，都是**一个文件一个插件**（`_` 开头的是作者辅助文件，不当插件）：
 
@@ -211,10 +211,11 @@ cp .env.example .env
   只 touch 不改内容不会白重载；置 `0` 只在启动时扫一次。
 - **坏文件只点名**：JSON 语法错、接口没有实现的片段**挡在装载口**并在日志里按文件名报出来
   （`INTERFACE_MISSING`），其余插件照常装载。
-- **会话归属**：现在只认**一个**"插件工作区"（`PLUGINS_WORKSPACE`）。不同会话工作区各自一套插件与版本
-  还没做，等有真实需求再动。
-- **审计**：每次图版本切换落一行 `graph_version`（结构哈希、参与片段、挂载链、片段清单、mermaid 存档、
-  `reason` = 启动 / 结构变化 / 熔断）。**写库失败只记 WARNING**——审计是旁路，不许带走装配。
+- **作用域 = 会话工作区**（`PLUGINS_WORKSPACE=1` 时）：每个会话按自己的工作区各扫一份，A 批准的插件
+  不进 B 的图，各自一套片段、版本与信任清单；没有插件（或没批准）的工作区共用全局那张图。
+  作用域同时在册 8 个（LRU，`runtime.MAX_SCOPES`），最久没用过的会被回收。
+- **审计**：每次图版本切换落一行 `graph_version`（作用域、结构哈希、参与片段、挂载链、片段清单、
+  mermaid 存档、`reason` = 启动 / 结构变化 / 熔断）。**写库失败只记 WARNING**——审计是旁路，不许带走装配。
 
 ## 启动
 

@@ -153,10 +153,11 @@ PLUGINS_ENABLED = os.getenv("PLUGINS_ENABLED", "1").strip() != "0"
 # 全局插件库：`.py`（可编程）/ `.json`（纯片段声明）；**装载即信任**。
 PLUGINS_DIR = _resolve(os.getenv("PLUGINS_DIR", "~/.my_agent/plugins"))
 
-# 工作区插件库：**默认为空 = 默认关**（§5.1）。填了路径才扫它的
-# `<该工作区>/.my_agent/plugins/`，且每个文件都要在工作区授权清单
+# 工作区插件库：**默认关**（§5.1）。置 1 = 每个会话按自己的工作区扫
+# `<该工作区>/.my_agent/plugins/`，且每个文件要在该工作区的授权清单
 # （`<该工作区>/.my_agent/plugins.json` 的 trusted）里才装载——"首次需审批、按工作区持久化"。
-PLUGINS_WORKSPACE = _resolve(os.getenv("PLUGINS_WORKSPACE", ""))
+# 打开后每个工作区各自一套插件与图版本：A 批准的插件不影响 B 的会话。
+PLUGINS_WORKSPACE = os.getenv("PLUGINS_WORKSPACE", "0").strip() in ("1", "true", "yes")
 
 # 内容指纹轮询热重载（Windows 上不依赖 inotify；比 mtime 稳，绕开"同秒等长"）。
 # 置 0 关掉：插件只在启动时扫一次。
