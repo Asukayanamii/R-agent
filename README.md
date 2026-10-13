@@ -250,6 +250,7 @@ python -m uvicorn app.main:app --reload --port 8000
 | --- | --- | --- |
 | POST | `/chat/stream` | 发起一轮对话，SSE 流 |
 | POST | `/chat/resume` | 带着用户选择，从 `interrupt` 处继续，SSE 流 |
+| POST | `/chat/abandon` | **放弃当前的待确认**，让卡住的会话重新能发消息（见下） |
 | POST | `/chat/skill` | 调用一个技能（等价 `/skill:<名字>`），SSE 流；技能名不存在时流里回一条 `error` |
 | POST | `/chat/compact` | 主动压缩一次上下文（等价 `/compact`）；跳过阈值与冷却，消息不删 |
 | GET | `/chat/history` | 读取既有会话消息，供前端恢复 |
@@ -284,6 +285,17 @@ python -m uvicorn app.main:app --reload --port 8000
 ```json
 {"thread_id": "demo", "value": "拒绝"}
 ```
+
+**`/chat/abandon`：从"卡住的会话"里脱身。** 任何一轮以错误收场（模型网关 400、断网）都可能把
+会话留成"卡着"的样子：要么 interrupt 还挂着、要么留下没人回应的 `tool_calls`。这时前端会把
+之后每条消息都判成"待确认未处理"而只排队（`threadPending`）——看起来整条会话死了，而报错里
+那句"请放弃这次待确认"原本没有对应的动作。
+
+`POST /chat/abandon {"thread_id": "..."}` 把这两种卡法都收拾掉（补回执消化 interrupt / 补"已中断"
+回执修悬空调用），并**重算索引里的 `pending` 标记**——只清图状态不刷索引的话，界面照样排队
+（真跑里就是这么漏过一次的）。返回 `{"abandoned": N}`，0 表示本来就不卡。
+前端在确认卡片上给了「放弃这次待确认」按钮，并在"队列有货却发不出去"时自动把这张卡片
+叫回屏幕上。
 
 ### 事件协议
 
