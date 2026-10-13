@@ -1,15 +1,14 @@
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.api import chat
 from app.config import LOG_LEVEL
-from app.container import shutdown, startup
+from app.container import get_assets, shutdown, startup
 from app.handler import unhandled_exception
+from app.harness.assets import ASSETS_STATE_ATTR, assets_router
 from app.result.result import ErrorResult, Result
 
 logging.basicConfig(
@@ -21,12 +20,12 @@ logging.basicConfig(
 )
 logging.getLogger("app").setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
-STATIC_DIR = Path(__file__).parent / "static"
-
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     await startup()
+    # 资产注册表放在 app.state 上：那条动态路由按请求查表，装卸只改表、不动路由表
+    setattr(app.state, ASSETS_STATE_ATTR, get_assets())
     yield
     await shutdown()
 
@@ -51,7 +50,8 @@ app.add_middleware(
 
 app.include_router(chat.router)
 
-app.mount("/ui", StaticFiles(directory=STATIC_DIR, html=True), name="ui")
+# `/ui` 不再静态挂载：一条查表的动态路由（未装载/卸载后都返回 404）
+app.include_router(assets_router())
 
 
 @app.get("/")

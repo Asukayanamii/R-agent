@@ -16,7 +16,7 @@ import logging
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
-from app.event.events import (
+from app.plugins.builtin.protocol.events import (
     CompactionInfo,
     HistoryMessage,
     HistoryToolCall,

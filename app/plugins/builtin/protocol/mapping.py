@@ -1,7 +1,8 @@
 """
-事件翻译：把 LangGraph 的 `astream_events` 翻成本项目的统一事件协议。
+出站接缝映射（builtin/protocol 的一部分）：LangGraph 的 `astream_events` → 统一事件协议。
 
-上层路由与前端不感知 LangGraph 的存在，转义表都在这一个文件里：
+内核只负责在固定输出点上产出；把产出翻成 wire 形状是协议的事——所以这个文件住在
+协议插件里（它 import agent 层的纯函数与常量，方向是 plugins → agent，允许）。
 
 | LangGraph 事件 | 项目事件 |
 | --- | --- |
@@ -25,7 +26,8 @@ from app.agent.compaction.policy import TAG as COMPACT_TAG
 from app.agent.compaction.runtime import COMPACT_NODE
 from app.agent.messages import brief, text_of, to_diff, to_interrupt_data
 from app.agent.nodes import log_step_limit
-from app.event.events import (
+
+from .events import (
     CompactData,
     CompactEvent,
     InterruptEvent,

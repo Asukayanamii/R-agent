@@ -1,5 +1,5 @@
 """
-SSE 传输层。
+SSE 传输层（builtin/protocol 的一部分）。
 
 把事件对象编码成 text/event-stream 帧，并统一收口 error / done 两个
 控制面事件，保证任何情况下前端都能收到明确的结束标记。
@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
-from app.event.events import DoneData, DoneEvent, ErrorData, ErrorEvent
+from .events import DoneData, DoneEvent, ErrorData, ErrorEvent
 
 logger = logging.getLogger(__name__)
 

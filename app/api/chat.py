@@ -5,20 +5,18 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.container import get_service
-from app.event.events import (
+from app.container import get_protocol, get_service
+from app.exceptions import InvalidInput
+from app.plugins.builtin.protocol.encoding import SSE_MEDIA_TYPE
+from app.plugins.builtin.protocol.events import (
     BrowseResponse,
     CompactionInfo,
     HistoryResponse,
     SkillListResponse,
-    ThreadData,
-    ThreadEvent,
     ThreadListResponse,
     WorkspaceInfo,
     WorkspaceResponse,
 )
-from app.event.stream import SSE_HEADERS, SSE_MEDIA_TYPE, sse_stream
-from app.exceptions import InvalidInput
 from app.result.result import Result
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -79,15 +77,22 @@ class SkillRequest(BaseModel):
 
 
 def _sse(thread_id: str, events: AsyncIterator[BaseModel]) -> StreamingResponse:
-    """两种入口共用同一套流外壳：先发 thread 握手，再透传数据面事件。"""
+    """两种入口共用同一套流外壳：先发 thread 握手，再透传数据面事件。
+
+    握手事件的构造与整条流的编码都走**协议服务**（`ctx.protocol`）——
+    换一份协议实现，这层一个字不用改；形状类只为 OpenAPI 的返回注解而静态引用。
+    """
+    protocol = get_protocol()
 
     async def frames() -> AsyncIterator[BaseModel]:
-        yield ThreadEvent(data=ThreadData(thread_id=thread_id))
+        yield protocol.thread_event(thread_id)
         async for event in events:
             yield event
 
     return StreamingResponse(
-        sse_stream(frames()), media_type=SSE_MEDIA_TYPE, headers=SSE_HEADERS
+        protocol.sse_stream(frames()),
+        media_type=protocol.media_type,
+        headers=protocol.headers,
     )
 
 

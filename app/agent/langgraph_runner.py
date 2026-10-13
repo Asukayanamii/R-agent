@@ -12,6 +12,7 @@ Agent 执行器（LangGraph 实现）。
 
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
@@ -26,25 +27,31 @@ from app.agent.messages import (
     unanswered_calls,
 )
 from app.agent.nodes import RECURSION_LIMIT
-from app.agent.stream import translate_events
-from app.event.events import (
+from app.harness.runtime import HarnessRuntime
+from app.models.entities import ThreadRecord
+from app.plugins.builtin.protocol.events import (
     CompactionInfo,
     ErrorData,
     ErrorEvent,
     HistoryView,
     InterruptData,
 )
-from app.harness.runtime import HarnessRuntime
-from app.models.entities import ThreadRecord
 
 logger = logging.getLogger(__name__)
 
 
 class LangGraphRunner:
-    """把 LangGraph 事件流翻译成统一事件协议。"""
+    """把 LangGraph 事件流翻译成统一事件协议。
 
-    def __init__(self, runtime: HarnessRuntime) -> None:
+    图不归它所有：结构由 `HarnessRuntime` 从片段合成、按版本管理；每个入口先取一份**租约**
+    （回合边界：应用 pending 版本），进行中的回合钉在它开始时的那版图上。
+    出站接缝 → wire 形状的翻译也**不在这里**——那是协议服务（`ctx.protocol`）的事，
+    由装配根注进来；它只负责把翻译流原样递出去。
+    """
+
+    def __init__(self, runtime: HarnessRuntime, protocol: Any) -> None:
         self.runtime = runtime
+        self.protocol = protocol
         self.checkpointer = runtime.checkpointer
         # 摘要模型也留着：用户主动压缩（compact）走的是图外那条路，得能拿到它
         self.summary_model = runtime.summary_model
@@ -63,7 +70,7 @@ class LangGraphRunner:
     ) -> AsyncIterator[BaseModel]:
         inputs = {"messages": [HumanMessage(content=message)]}
         async with self.runtime.lease(thread_id) as version:
-            async for event in translate_events(
+            async for event in self.protocol.translate(
                 version.graph,
                 thread_id=thread_id,
                 config=self._config(thread_id, workspace),
@@ -96,7 +103,7 @@ class LangGraphRunner:
                     )
                 )
                 return
-            async for event in translate_events(
+            async for event in self.protocol.translate(
                 version.graph,
                 thread_id=thread_id,
                 config=config,

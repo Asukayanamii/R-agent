@@ -25,7 +25,7 @@ from legacy_graph import legacy_build_graph
 
 from app.agent import tool_calls as tc
 from app.agent.messages import build_history
-from app.agent.stream import translate_events
+from app.plugins.builtin.protocol.mapping import translate_events
 from app.harness.runtime import HarnessRuntime
 from app.kernel import Context
 

@@ -13,6 +13,7 @@
 import logging
 from contextlib import AsyncExitStack
 from pathlib import Path
+from typing import Any
 
 from app.agent.runner import AgentRunner, StubRunner
 from app.config import PROJECT_ROOT
@@ -49,6 +50,28 @@ def _provide(ctx: Context, name: str, value: object) -> None:
     """注册一个服务并留住撤销句柄：有装上就要有卸下（与插件的 effect 语义一致）。"""
     _service_handles.append(ctx.provide(name, value))
     _service_names.append(name)
+
+
+async def _load_plugins(ctx: Context) -> None:
+    """装配内置插件：协议必需、前端可选（失败只降级，不带崩内核）。
+
+    顺序有意义：协议先上——`webui` 用 `requires: "protocol:v1"` 依赖它的形状表，
+    契约不满足就**拒绝装载**（§2.8：形状不对，等不来）；`loop` 由 HarnessRuntime 装载。
+    """
+    from app.harness.assets import AssetRegistry
+    from app.plugins.builtin import protocol, webui
+
+    # 界面类接缝（ctx.assets）：界面插件把静态资产挂到这张表上，装载/卸载都不动路由表
+    AssetRegistry(ctx)
+
+    protocol_fiber = ctx.plugin(protocol.plugin, essential=True)
+    await protocol_fiber
+
+    try:
+        fiber = ctx.plugin(webui.plugin)
+        await fiber
+    except Exception as error:  # noqa: BLE001 - 可选插件的任何装载失败都只降级
+        logger.warning("可选插件 builtin/webui 未装载，/ui 将返回 404：%s", error)
 
 
 async def _build_runner(ctx: Context) -> AgentRunner:
@@ -147,7 +170,7 @@ async def _build_runner(ctx: Context) -> AgentRunner:
         summary_model=build_summary_model(),
     )
     await runtime.setup()
-    return LangGraphRunner(runtime)
+    return LangGraphRunner(runtime, ctx.get("protocol"))
 
 
 async def startup() -> None:
@@ -168,6 +191,8 @@ async def startup() -> None:
     ctx = Context()
     _install_kernel_logging(ctx)
 
+    await _load_plugins(ctx)
+
     runner = await _build_runner(ctx)
     _provide(ctx, "runner", runner)
     checkpointer = getattr(runner, "checkpointer", None)
@@ -184,7 +209,7 @@ async def startup() -> None:
     _exit_stack.push_async_callback(workspaces.close)
     _provide(ctx, "workspaces", workspaces)
 
-    service = ChatService(runner, index, workspaces)
+    service = ChatService(runner, index, workspaces, ctx.get("protocol"))
     _provide(ctx, "chat", service)
 
     adopted, dropped = await service.adopt_workspaces()
@@ -205,6 +230,9 @@ async def startup() -> None:
     if rebound:
         logger.info("已把 %d 个没有归属的会话绑到应用所在目录", rebound)
 
+    # 装配完成的总校验：必需的插件都必须在 ACTIVE（stub 模式也走这一条）
+    ctx.registry.ensure_essentials()
+
     _context = ctx
     ctx.logger("container").info("内核就绪：服务 %s", "、".join(_service_names))
 
@@ -224,3 +252,27 @@ def get_service() -> ChatService:
     if _context is None:
         raise RuntimeError("服务尚未初始化，请确认应用已走 lifespan 启动")
     return _context.get("chat")
+
+
+def get_protocol() -> Any:
+    """协议服务（`ctx.protocol`）：wire 形状的构造与 SSE 编码的唯一入口。
+
+    api 层只经它拿握手事件与流编码——换一份协议实现，这一层不用改。
+    """
+    if _context is None:
+        raise RuntimeError("服务尚未初始化，请确认应用已走 lifespan 启动")
+    return _context.get("protocol")
+
+
+def get_assets() -> Any:
+    """资产注册表（`ctx.assets`）：`/ui` 那条动态路由按请求查它。"""
+    if _context is None:
+        raise RuntimeError("服务尚未初始化，请确认应用已走 lifespan 启动")
+    return _context.get("assets")
+
+
+def get_context() -> Context:
+    """装配出来的内核上下文（诊断与测试用：查纤维状态、装卸插件都在它上面）。"""
+    if _context is None:
+        raise RuntimeError("服务尚未初始化，请确认应用已走 lifespan 启动")
+    return _context

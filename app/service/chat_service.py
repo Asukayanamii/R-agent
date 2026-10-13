@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -21,20 +22,17 @@ from app.config import PROJECT_ROOT
 from app.dao.thread_index_dao import ThreadIndexDao
 from app.dao.workspace_dao import WorkspaceDao
 from app.exceptions import InvalidInput
-from app.event.events import (
+from app.models.entities import ThreadRecord, WorkspaceRecord
+from app.plugins.builtin.protocol.events import (
     BrowseEntry,
     BrowseResponse,
     CompactionInfo,
     HistoryView,
     InterruptData,
-    InterruptEvent,
-    MessageEndData,
-    MessageEndEvent,
     SkillInfo,
     SkillListResponse,
     ThreadSummary,
 )
-from app.models.entities import ThreadRecord, WorkspaceRecord
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +42,17 @@ _settle_tasks: set[asyncio.Task] = set()
 
 class ChatService:
     def __init__(
-        self, runner: AgentRunner, index: ThreadIndexDao, workspaces: WorkspaceDao
+        self,
+        runner: AgentRunner,
+        index: ThreadIndexDao,
+        workspaces: WorkspaceDao,
+        protocol: Any,
     ) -> None:
         self._runner = runner
         self._index = index
         self._workspaces = workspaces
+        # 事件构造走协议服务（`ctx.protocol`）：换 wire 形状时这层不改
+        self._protocol = protocol
 
     async def _stuck_reason(self, thread_id: str) -> str | None:
         """会话是否卡着（用于索引里的 pending 标记）。"""
@@ -102,12 +106,12 @@ class ChatService:
             # /chat/resume"——他面对的是界面，没法自己构造请求，只会卡住。
             # 把待确认项重新推回去，前端会再渲染一张卡片，点一下即可。
             for item in pending:
-                yield InterruptEvent(
-                    data=item.model_copy(
+                yield self._protocol.interrupt_event(
+                    item.model_copy(
                         update={"prompt": f"上一条消息未处理，请先确认：{item.prompt}"}
                     )
                 )
-            yield MessageEndEvent(data=MessageEndData(message_id=uuid4().hex[:8]))
+            yield self._protocol.message_end_event(uuid4().hex[:8])
             return
 
         if await self._runner.has_dangling_tool_calls(thread_id):

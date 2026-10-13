@@ -45,10 +45,19 @@ class Inject:
         return result
 
 
+def _contract_list(value: Any) -> tuple[str, ...]:
+    """把 provides / requires 归一化成字符串元组（单值或列表）。"""
+    if not value:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(str(item) for item in value)
+
+
 class ResolvedPlugin:
     """归一化之后的插件描述。"""
 
-    __slots__ = ('kind', 'callback', 'identity', 'name', 'Config', 'inject', 'provide')
+    __slots__ = ('kind', 'callback', 'identity', 'name', 'Config', 'inject', 'provide', 'provides', 'requires')
 
     def __init__(self, kind: str, callback: Any, identity: Any) -> None:
         self.kind = kind
@@ -58,6 +67,10 @@ class ResolvedPlugin:
         self.Config = getattr(identity, 'Config', None)
         self.inject = getattr(identity, 'inject', None)
         self.provide = getattr(identity, 'provide', None)
+        #: 契约依赖（§2.8）：形状与版本，与"服务依赖"（inject）是两回事——
+        #: 服务依赖缺了是 PENDING（等它来）；契约对不上是**拒绝装载**（形状不对等不来）。
+        self.provides = _contract_list(getattr(identity, 'provides', None))
+        self.requires = _contract_list(getattr(identity, 'requires', None))
 
 
 def resolve_plugin(plugin: Any) -> Optional[ResolvedPlugin]:
@@ -75,6 +88,8 @@ def resolve_plugin(plugin: Any) -> Optional[ResolvedPlugin]:
         resolved.Config = plugin.get('Config')
         resolved.inject = plugin.get('inject')
         resolved.provide = plugin.get('provide')
+        resolved.provides = _contract_list(plugin.get('provides'))
+        resolved.requires = _contract_list(plugin.get('requires'))
         return resolved
     if isinstance(plugin, type):
         return ResolvedPlugin('class', plugin, plugin)
@@ -95,6 +110,7 @@ class RegistryService:
         self._internal: dict[Any, PluginRuntime] = {}
         self._keep_alive: dict[int, Any] = {}
         self._essentials: list[Fiber] = []
+        self._contracts: dict[str, list[Fiber]] = {}
 
     def _key(self, identity: Any) -> Any:
         """计算插件身份的字典键；不可哈希的对象（如字典）按 id 记并保活。"""
@@ -148,17 +164,42 @@ class RegistryService:
             fiber.dispose()
         return runtime
 
+    # ================================================================ 契约依赖
+    def contract_active(self, contract: str) -> bool:
+        """某个契约当前是否可用：存在处于 ACTIVE 的提供方（加载失败不算数）。"""
+        return any(
+            fiber.state is FiberState.ACTIVE for fiber in self._contracts.get(contract, [])
+        )
+
+    def provided_contracts(self) -> tuple[str, ...]:
+        """当前可用的契约清单（诊断用）。"""
+        return tuple(
+            sorted(name for name in self._contracts if self.contract_active(name))
+        )
+
     # ================================================================ 启动插件
     def plugin(self, ctx: Any, plugin: Any, config: Any = None, *, essential: bool = False) -> Fiber:
         """在当前上下文中启动插件，返回对应的 fiber。
 
         ``essential=True`` 把它记进"必需清单"（由装配脚本声明），
         装配完成后用 :meth:`ensure_essentials` 校验——必需的停用不是可以带着跑的降级。
+
+        ``requires`` / ``provides`` 是**契约依赖**（§2.8）：形状与版本。
+        提供方加载后契约才可用（加载失败不算数），依赖方在装载时校验——
+        **不满足就拒绝装载**，不是 PENDING：形状不对，等不来。
         """
         resolved = resolve_plugin(plugin)
         if resolved is None:
             raise CordisError('INVALID_PLUGIN', f'{CordisError.Code.INVALID_PLUGIN}, received {type(plugin).__name__}')
         ctx.fiber.assert_active()
+
+        missing = [name for name in resolved.requires if not self.contract_active(name)]
+        if missing:
+            raise CordisError(
+                'CONTRACT_UNSATISFIED',
+                f'{resolved.name or "插件"} 需要的契约不可用：{"、".join(missing)}'
+                f'（当前可用：{"、".join(self.provided_contracts()) or "无"}）',
+            )
 
         key = self._key(resolved.identity)
         runtime = self._internal.get(key)
@@ -170,9 +211,28 @@ class RegistryService:
             self._internal[key] = runtime
 
         fiber = Fiber(ctx, config, Inject.resolve(resolved.inject), runtime)
+        if resolved.provides:
+            self._register_contracts(fiber, resolved.provides)
         if essential:
             self._essentials.append(fiber)
         return fiber
+
+    def _register_contracts(self, fiber: Fiber, contracts: tuple[str, ...]) -> None:
+        """把 ``provides`` 登记成提供方 fiber 的 effect：卸载即撤销。"""
+
+        def install() -> Callable[[], None]:
+            for name in contracts:
+                self._contracts.setdefault(name, []).append(fiber)
+
+            def withdraw() -> None:
+                for name in contracts:
+                    owners = self._contracts.get(name) or []
+                    if fiber in owners:
+                        owners.remove(fiber)
+
+            return withdraw
+
+        fiber.effect(install, f'provides({", ".join(contracts)})')
 
     def ensure_essentials(self) -> None:
         """启动校验：必需插件必须都在 ACTIVE，否则抛错并点名（缺了就别带着半死的内核跑）。

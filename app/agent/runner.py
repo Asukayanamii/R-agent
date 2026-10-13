@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from app.event.events import (
+from app.plugins.builtin.protocol.events import (
     CompactionInfo,
     ErrorData,
     ErrorEvent,
