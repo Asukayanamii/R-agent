@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import inspect
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -39,10 +40,11 @@ class HarnessRuntime:
         ctx: Context,
         *,
         checkpointer: BaseCheckpointSaver,
-        model: BaseChatModel,
-        summary_model: BaseChatModel,
+        model: BaseChatModel | None = None,
+        summary_model: BaseChatModel | None = None,
         base: Any = None,
         versions: VersionRegistry | None = None,
+        on_version: Any = None,
     ) -> None:
         self.ctx = ctx
         self.checkpointer = checkpointer
@@ -51,6 +53,9 @@ class HarnessRuntime:
         self.base = base
         """骨架插件（`role="base"` 的那个）。由**装配根**交进来——harness 不认识具体插件，
         否则"装配层"就反过来依赖了它要装配的东西（分层守卫：`tests/test_layout.py`）。"""
+        self.on_version = on_version
+        """每次合成成功后的回调（`(version, report, reason)`，可同步可异步）：图版本审计的落点。
+        装配根接到 `GraphVersionService.record`；回调抛错只记 WARNING——**审计不许带走装配**。"""
         self.versions = versions or VersionRegistry()
         self.structure = ctx.get('structure') or StructureService(ctx)
         self.failures = FailureLedger()
@@ -61,10 +66,16 @@ class HarnessRuntime:
 
     # ---------------------------------------------------------------- 装配
     async def setup(self) -> None:
-        """提供依赖 → 装载必需插件 → 校验 → 首次合成。"""
+        """提供依赖 → 装载骨架插件 → 校验 → 首次合成。"""
         if self.ctx.get('model') is None:
-            self.ctx.provide('model', self.model)  # 阶段 D 由 builtin/model 插件接管
+            if self.model is None:
+                raise CordisError('没有可用的模型：builtin/model 插件没装，装配根也没给兜底模型')
+            self.ctx.provide('model', self.model)  # 兜底路径（装配根自带模型时）
         if self.ctx.get('summary_model') is None:
+            if self.summary_model is None:
+                raise CordisError(
+                    '没有可用的摘要模型：builtin/model 插件没装，装配根也没给兜底模型'
+                )
             self.ctx.provide('summary_model', self.summary_model)
 
         if self.base is None:
@@ -75,7 +86,7 @@ class HarnessRuntime:
         self._loop_fiber = self.ctx.plugin(self.base, essential=True)
         await self._loop_fiber
         self.ctx.registry.ensure_essentials()
-        await self.recompose()
+        await self.recompose(reason='启动')
 
     # ---------------------------------------------------------------- 合成
     def _resolve_interface(self, name: str) -> Any:
@@ -107,13 +118,15 @@ class HarnessRuntime:
             return ''
         return render_mermaid(version.graph)
 
-    async def recompose(self) -> GraphVersion:
+    async def recompose(self, reason: str = '结构变化') -> GraphVersion:
         """按当前片段合成一个新版本，交给版本账本。
 
         已被熔断（连续失败达到阈值）的片段不参与合成——"自动摘出"的落点就在这里。
 
         已有 current（说明有在跑的回合）时新版本只是 pending，等下一次 ``lease()`` 生效；
         首次装配没有在跑的东西，直接生效。
+
+        ``reason`` 进审计（启动 / 结构变化 / 熔断）：事后回放要能看出"为什么换了这版图"。
         """
         collected = self.structure.collect()
         active = [item for item in collected if not self.failures.is_disabled(item.id)]
@@ -133,11 +146,26 @@ class HarnessRuntime:
             self.versions.apply_pending()
         logger.info("图已合成 v%d：哈希 %s，节点 %d 个，锚点 %s",
             version.id, version.structure_hash[:12], len(version.node_names), "、".join(version.anchors))
-        logger.info("合成报告：\n%s", self.build_report(version).render())
+        report = self.build_report(version)
+        logger.info("合成报告：\n%s", report.render())
+        await self._notify(version, report, reason)
         return version
 
+    async def _notify(self, version: GraphVersion, report: CompositionReport, reason: str) -> None:
+        """图版本审计（旁路）：回调可同步可异步，**抛错只记 WARNING**——审计坏掉不该带走装配。"""
+        if self.on_version is None:
+            return
+        try:
+            result = self.on_version(version, report, reason)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as error:  # noqa: BLE001 - 审计是旁路
+            logger.warning('图版本审计失败（不影响装配）：%s', error)
+
     # ---------------------------------------------------------------- 报告
-    def build_report(self, version: GraphVersion | None = None) -> CompositionReport:
+    def build_report(
+        self, version: GraphVersion | None = None, scope: str = ''
+    ) -> CompositionReport:
         """按当前片段集合与账本生成合成报告（日志 / `graph_updated` / inspect 共用）。"""
         version = version or self.versions.current
         collected = self.structure.collect()
@@ -169,6 +197,7 @@ class HarnessRuntime:
             ),
             mounts=tuple(mounts),
             warnings=tuple(version.warnings) if version else (),
+            scope=scope,
             # 片段集合变了但还没合成/还没到回合边界：报告不能拿"现状"冒充"正在跑的图"
             pending_change=self._composed_revision != self.structure.revision,
         )
@@ -195,7 +224,8 @@ class HarnessRuntime:
             and self._composed_circuit == self.failures.revision
         ):
             return False
-        await self.recompose()
+        circuit_changed = self._composed_circuit != self.failures.revision
+        await self.recompose(reason='熔断' if circuit_changed else '结构变化')
         return True
 
     # ---------------------------------------------------------------- 租约

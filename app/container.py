@@ -98,7 +98,7 @@ def _compaction_settings(ctx: Context):
     return service.settings if service is not None else CompactionSettings.from_app_config()
 
 
-async def _build_runner(ctx: Context) -> AgentRunner:
+async def _build_runner(ctx: Context, auditor: Any = None) -> AgentRunner:
     from app.common.config import (
         AGENTS_ANCESTORS,
         AGENTS_MD_ENABLED,
@@ -200,6 +200,7 @@ async def _build_runner(ctx: Context) -> AgentRunner:
         summary_model=build_summary_model(),
         base=loop.plugin,
         versions=VersionRegistry(keep=GRAPH_VERSIONS_KEEP),
+        on_version=auditor.record if auditor is not None else None,
     )
     await runtime.setup()
     await _start_discovery(ctx)
@@ -257,7 +258,18 @@ async def startup() -> None:
 
     await _load_plugins(ctx)
 
-    runner = await _build_runner(ctx)
+    # 图版本审计：只需要 SQLITE_PATH，不依赖插件——但必须赶在 _build_runner 之前建好，
+    # 否则首次合成那一次（reason='启动'）就记不上了。
+    from app.web.dao.graph_version_dao import GraphVersionDao
+    from app.web.service.graph_version_service import GraphVersionService
+
+    versions_dao = GraphVersionDao(SQLITE_PATH)
+    await versions_dao.open()
+    _exit_stack.push_async_callback(versions_dao.close)
+    versions = GraphVersionService(versions_dao)
+    _provide(ctx, "graph_versions", versions)
+
+    runner = await _build_runner(ctx, versions)
     _provide(ctx, "runner", runner)
     checkpointer = getattr(runner, "checkpointer", None)
     if checkpointer is not None:

@@ -11,7 +11,7 @@
 真接了 ORM 也一样：ORM 模型是存储的形状，这里是层间交换的形状，两者不合并。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
@@ -31,4 +31,28 @@ class WorkspaceRecord:
     path: str = ""
     path_key: str = ""
     name: str = ""
+    created_at: str = ""
+
+
+@dataclass(slots=True)
+class GraphVersionRecord:
+    """一次图版本切换的审计快照：改前/改后、为什么、长什么样。
+
+    由业务层从 `GraphVersion` + 合成报告组装（见 `app.web.service.graph_version_service`），
+    DAO 只负责落表与解回；JSON 化的细节（哪些字段打包成 JSON 列）在 DAO 里。
+    """
+
+    scope: str = ""
+    """作用域：阶段 J 起 = 会话工作区；空串 = 全局（内置插件那套图）。"""
+
+    version: int = 0
+    structure_hash: str = ""
+    reason: str = ""
+    base: str = ""
+    protocol: str | None = None
+    participants: tuple[str, ...] = ()
+    mounts: tuple[dict, ...] = ()
+    spec: dict = field(default_factory=dict)
+    mermaid: str = ""
+    warnings: tuple[str, ...] = ()
     created_at: str = ""
