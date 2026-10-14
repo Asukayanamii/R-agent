@@ -3,8 +3,8 @@
 来源与信任（§5.1）：
 
 - 全局库 `PLUGINS_DIR`：`*.py`（可编程）/ `*.json`（纯声明片段），**装载即信任**；
-- 工作区库 `<工作区>/.my_agent/plugins/`：只有配了 `PLUGINS_WORKSPACE` 才扫；每个文件还要
-  出现在该工作区的授权清单（`<工作区>/.my_agent/plugins.json` 的 `trusted`）里才装载——
+- 工作区库 `<工作区>/.r-agent/plugins/`：只有配了 `PLUGINS_WORKSPACE` 才扫；每个文件还要
+  出现在该工作区的授权清单（`<工作区>/.r-agent/plugins.json` 的 `trusted`）里才装载——
   没列出的点名报"待批准"，这就是"首次需审批、按工作区持久化"的落点。
 
 热重载：**内容指纹**轮询（Windows 上不依赖 inotify；比 mtime 稳，绕开"同秒等长"坑）。
@@ -39,7 +39,7 @@ from app.kernel.utils import call_plugin
 
 logger = logging.getLogger(__name__)
 
-CONFIG_DIR = '.my_agent'
+CONFIG_DIR = '.r-agent'
 PLUGIN_SUBDIR = 'plugins'
 TRUST_FILE = 'plugins.json'
 SUFFIXES = ('.py', '.json')
@@ -178,7 +178,7 @@ class PluginDiscovery:
         return [fiber for fiber, _ in self._loaded.values()]
 
     def directory(self) -> Path | None:
-        """这个库的目录：全局库就是 `global_dir`，工作区库是 `<工作区>/.my_agent/plugins`。"""
+        """这个库的目录：全局库就是 `global_dir`，工作区库是 `<工作区>/.r-agent/plugins`。"""
         return self.global_dir if self.global_dir is not None else self._workspace_dir()
 
     async def reload_file(self, path: Path) -> DiscoveryReport:

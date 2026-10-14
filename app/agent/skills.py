@@ -13,8 +13,8 @@
 
 | 来源 | 路径 |
 | --- | --- |
-| 全局库 | `SKILLS_DIR`（默认 `~/.my_agent/skills`） |
-| 项目库 | `<工作区>/.my_agent/skills/` |
+| 全局库 | `SKILLS_DIR`（默认 `~/.r-agent/skills`） |
+| 项目库 | `<工作区>/.r-agent/skills/` |
 
 热路径（每轮拼提示词都要走一遍，一轮里还会走多次）只做 `scandir` + `stat`：文件内容按
 `(mtime_ns, size)` 缓存，只有真的改了才重新读。frontmatter 用 PyYAML 解析——折叠块标量

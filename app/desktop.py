@@ -21,7 +21,7 @@ from app.main import app
 
 logger = logging.getLogger(__name__)
 
-WINDOW_TITLE = "my-agent"
+WINDOW_TITLE = "r-agent"
 WINDOW_SIZE = (1180, 780)
 WINDOW_MIN = (880, 600)
 

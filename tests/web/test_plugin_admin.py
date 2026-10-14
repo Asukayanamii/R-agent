@@ -51,7 +51,7 @@ async def make_admin(tmp_path):
     )
 
     workspace = tmp_path / 'ws'
-    plugins = workspace / '.my_agent' / 'plugins'
+    plugins = workspace / '.r-agent' / 'plugins'
     write_fragment(plugins, 'panel.json', GOOD)
     write_fragment(
         plugins,
@@ -84,7 +84,7 @@ async def test_overview_lists_both_libraries_and_states(tmp_path):
 
     assert overview['enabled'] is True
     assert overview['libraries']['全局'] == str(global_dir)
-    assert overview['libraries']['工作区'] == str(workspace / '.my_agent' / 'plugins')
+    assert overview['libraries']['工作区'] == str(workspace / '.r-agent' / 'plugins')
     assert by_file['marker.py']['source'] == '全局'
     assert by_file['panel.json']['state'] == 'ACTIVE'
     assert by_file['later.json']['state'] == '待批准'
@@ -93,7 +93,7 @@ async def test_overview_lists_both_libraries_and_states(tmp_path):
 
 async def test_disable_and_enable_are_two_sides_of_one_thing(tmp_path):
     admin, workspace, _ = await make_admin(tmp_path)
-    directory = workspace / '.my_agent' / 'plugins'
+    directory = workspace / '.r-agent' / 'plugins'
 
     # 停用：改 `_` 前缀 + 撤信任 → 文件还在，状态是"已停用"（不是"待批准"）
     await admin.set_enabled('工作区', str(workspace), 'panel.json', False)
@@ -146,7 +146,7 @@ async def test_reload_rereads_an_unchanged_file(tmp_path):
 
 async def test_remove_takes_the_file_and_the_trust_away(tmp_path):
     admin, workspace, _ = await make_admin(tmp_path)
-    directory = workspace / '.my_agent' / 'plugins'
+    directory = workspace / '.r-agent' / 'plugins'
 
     result = await admin.remove('工作区', str(workspace), 'panel.json')
 

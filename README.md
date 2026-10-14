@@ -73,8 +73,8 @@ LangGraph 的时间性 = 执行进度可持久化（运行期）**。
 > 语义、持久化、暂停/恢复、确定性并行。这四件恰好是最不该自己写对的部分；而且审批、沙箱授权、
 > 压缩锚点、历史恢复现在已经全在检查点里，重写等于把它们一起推倒。
 
-> 名字沿用上游：conda 环境 `my_agent`、`~/.my_agent/`、日志前缀 `[my-agent]`。改不改、什么时候改
-> 单独定——混进功能改动里做，diff 就没法看了。
+> 名字说明：上游项目叫 `my_agent`；本仓库的名字是 `r-agent`——conda 环境 `r-agent`、
+> `~/.r-agent/`、日志前缀 `[r-agent]`。
 
 ## 路线图
 
@@ -130,17 +130,18 @@ Context 装配（必需插件缺了启动即失败）；两级插件库的发现
 
 ## 环境要求
 
-- Python 3.13（conda 环境名 `my_agent`）
+- Python 3.13（conda 环境名 `r-agent`）
 - Windows / Linux / macOS 均可
 
 ## 依赖安装
 
 ```bash
 conda env create -f environment.yml
-conda activate my_agent
+conda activate r-agent
 ```
 
-已有环境或使用 venv：`pip install -r requirements.txt`。
+已有环境或使用 venv：`pip install -r requirements.txt`
+（旧环境名 `my_agent` 可以直接继续用——代码不依赖环境名；要改名用 `conda rename -n my_agent r-agent`）。
 桌面模式额外需要 `pip install -r requirements-desktop.txt`。
 
 ## 配置
@@ -165,12 +166,12 @@ cp .env.example .env
 | `COMPACT_KEEP_TOKENS` | `20000` | 压缩时保留的最近原文预算（tokens），更早的中段摘要掉 |
 | `COMPACT_MODEL` | 空 | 摘要用哪个模型；留空跟随 `LLM_MODEL`。填个小模型更快更便宜 |
 | `SKILLS_ENABLED` | `1` | `0` 关掉技能发现与沙箱的受信只读根 |
-| `SKILLS_DIR` | `~/.my_agent/skills` | 全局技能库；同时是沙箱的**受信只读根**（只读放行） |
+| `SKILLS_DIR` | `~/.r-agent/skills` | 全局技能库；同时是沙箱的**受信只读根**（只读放行） |
 | `AGENTS_MD_ENABLED` | `1` | `0` 关掉 `AGENTS.md` / `CLAUDE.md` 注入 |
 | `AGENTS_ANCESTORS` | `1` | `0` 只读全局与工作区根，不向上遍历祖先目录 |
 | `PLUGINS_ENABLED` | `1` | 插件发现总开关；`0` 只装配内置插件（两级插件库都不扫） |
-| `PLUGINS_DIR` | `~/.my_agent/plugins` | 全局插件库：`.py`（可编程）/ `.json`（纯片段声明），**装载即信任** |
-| `PLUGINS_WORKSPACE` | `0` | 工作区插件库开关：`1` = 每个会话按**自己的工作区**各扫一份（作用域隔离：A 批准的插件不影响 B 的会话），每个文件要在 `<该工作区>/.my_agent/plugins.json` 的 `trusted` 里才装载 |
+| `PLUGINS_DIR` | `~/.r-agent/plugins` | 全局插件库：`.py`（可编程）/ `.json`（纯片段声明），**装载即信任** |
+| `PLUGINS_WORKSPACE` | `0` | 工作区插件库开关：`1` = 每个会话按**自己的工作区**各扫一份（作用域隔离：A 批准的插件不影响 B 的会话），每个文件要在 `<该工作区>/.r-agent/plugins.json` 的 `trusted` 里才装载 |
 | `PLUGIN_WATCH` | `1` | 内容指纹轮询热重载；`0` 只在启动时扫一次 |
 | `PLUGIN_AUTHOR_INSTALL` | `0` | 允许 agent 用 `install_plugin` 写 `.py`（**等于执行任意代码**，仍要过确认卡）；`add_fragment` 不受它影响 |
 | `GRAPH_VERSIONS_KEEP` | `4` | 图版本账本保留几个历史版本（LRU，进行中的回合不回收） |
@@ -187,8 +188,8 @@ cp .env.example .env
 
 | 来源 | 位置 | 信任 |
 | --- | --- | --- |
-| 全局库 | `PLUGINS_DIR`（默认 `~/.my_agent/plugins`） | **装载即信任**（是你自己的目录） |
-| 工作区库 | `<会话的工作区>/.my_agent/plugins/`（`PLUGINS_WORKSPACE=1` 才扫） | **按工作区各自一份清单**；每个文件要出现在 `<该工作区>/.my_agent/plugins.json` 的 `trusted` 里才装载 |
+| 全局库 | `PLUGINS_DIR`（默认 `~/.r-agent/plugins`） | **装载即信任**（是你自己的目录） |
+| 工作区库 | `<会话的工作区>/.r-agent/plugins/`（`PLUGINS_WORKSPACE=1` 才扫） | **按工作区各自一份清单**；每个文件要出现在 `<该工作区>/.r-agent/plugins.json` 的 `trusted` 里才装载 |
 
 两种形态，都是**一个文件一个插件**（`_` 开头的是作者辅助文件，不当插件）：
 
@@ -233,7 +234,7 @@ cp .env.example .env
 三道闸门，缺一不可：**写之前**先验（JSON 形状 / 锚点在骨架锚点表里 / interface 有实现）——
 不让人批准一个注定装不上的文件；**批准**复用现成的 `interrupt` 确认卡（前端不用改）；
 **生效**在下一个回合边界（本轮仍跑旧图）。怎么退：删掉那个文件，或把名字从
-`<工作区>/.my_agent/plugins.json` 的 `trusted` 里去掉。怎么回放：审计表给"改前/改后 + 为什么"。
+`<工作区>/.r-agent/plugins.json` 的 `trusted` 里去掉。怎么回放：审计表给"改前/改后 + 为什么"。
 
 ## 启动
 
@@ -455,8 +456,8 @@ description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时
 
 | 来源 | 路径 | 作用域 |
 | --- | --- | --- |
-| 项目 | `<工作区>/.my_agent/skills/` | 当前工作区 |
-| 全局 | `SKILLS_DIR`（默认 `~/.my_agent/skills`） | 所有工作区 |
+| 项目 | `<工作区>/.r-agent/skills/` | 当前工作区 |
+| 全局 | `SKILLS_DIR`（默认 `~/.r-agent/skills`） | 所有工作区 |
 | 内置 | `builtin/skillbook` 随包带的库 | 所有工作区（作用域标"内置"） |
 
 - **进提示词的只有名字、描述、路径**，正文由模型用 `read` 按需读取（渐进披露）。技能里引用的
@@ -478,7 +479,7 @@ description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时
 同一个目录里取**一个**文件：`AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md`
 （override 顶掉同目录另外两个，其他目录照常层叠）。加载顺序是**外 → 内**：
 
-1. 全局：`~/.my_agent/AGENTS.md`
+1. 全局：`~/.r-agent/AGENTS.md`
 2. 祖先链：从工作区向上，**到含 `.git` 的目录为止**（仓库边界之外跟这个项目没关系）
 3. 工作区根
 
@@ -532,8 +533,8 @@ description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时
 | --- | --- | --- |
 | 拒绝 | 不存 | — |
 | 允许（本次运行有效） | 内存 | 本工作区，进程重启即失效 |
-| 记住（仅此工作区） | `<工作区>/.my_agent/sandbox.json` | 本工作区，持久 |
-| 记住（所有工作区） | `~/.my_agent/sandbox.json` | 所有工作区，持久 |
+| 记住（仅此工作区） | `<工作区>/.r-agent/sandbox.json` | 本工作区，持久 |
+| 记住（所有工作区） | `~/.r-agent/sandbox.json` | 所有工作区，持久 |
 
 授权粒度是**被问到的那一个路径本身**：同意一个文件不等于同意整个目录。
 
@@ -640,10 +641,10 @@ spec 里显式带上两类**包内数据**（PyInstaller 只自动收 `.py`）�
 
 | 东西 | 默认位置 | 用哪个配置项改 |
 | --- | --- | --- |
-| 全局插件库 | `~/.my_agent/plugins` | `PLUGINS_DIR` |
-| 全局技能库 | `~/.my_agent/skills` | `SKILLS_DIR` |
-| 会话/审计库 | `~/.my_agent/data/checkpoints.db` | `SQLITE_PATH` |
-| 用户配置 | `~/.my_agent/.env` | 首次启动自动生成（**每行都注释掉**的模板：要改哪项就取消注释） |
+| 全局插件库 | `~/.r-agent/plugins` | `PLUGINS_DIR` |
+| 全局技能库 | `~/.r-agent/skills` | `SKILLS_DIR` |
+| 会话/审计库 | `~/.r-agent/data/checkpoints.db` | `SQLITE_PATH` |
+| 用户配置 | `~/.r-agent/.env` | 首次启动自动生成（**每行都注释掉**的模板：要改哪项就取消注释） |
 | 部署配置 | 可执行文件旁边的 `.env` | 便携部署：库位置、插件开关放这里 |
 
 优先级：**真环境变量 > 用户配置 > 安装目录旁的 `.env` > 代码默认值**。
@@ -651,10 +652,10 @@ spec 里显式带上两类**包内数据**（PyInstaller 只自动收 `.py`）�
 启动日志第二行把五处位置全部打出来——"我的库到底在哪"不用猜：
 
 ```
-库位置：应用目录 <安装目录>；用户配置 ~/.my_agent/.env；全局插件库 …；全局技能库 …；会话库 …
+库位置：应用目录 <安装目录>；用户配置 ~/.r-agent/.env；全局插件库 …；全局技能库 …；会话库 …
 ```
 
-源码运行时默认值不变（`./data`、`~/.my_agent/plugins`），**打包形态才把默认落点换到用户目录**
+源码运行时默认值不变（`./data`、`~/.r-agent/plugins`），**打包形态才把默认落点换到用户目录**
 （安装目录不该被写）。
 
 ## 插件管理
@@ -792,7 +793,7 @@ app/
 > 和参数 blob 都打出来，自己人的日志反而找不到。uvicorn 的访问日志不受影响。
 
 > 错误信息就是异常原文，不做翻译——面向程序员的项目，原文比客套话有用。
-> 前端也会把 `error` 帧与关键转场打到浏览器 console（前缀 `[my-agent]`）。
+> 前端也会把 `error` 帧与关键转场打到浏览器 console（前缀 `[r-agent]`）。
 
 ## 扩展点
 
@@ -800,10 +801,10 @@ app/
 | --- | --- |
 | 加工具 | `app/agent/tools/` 下新建文件，在 `__init__.py` 的 `TOOLS` 里注册 |
 | 给插件加可配置项 | 在**插件自己**的 `Config` + `default_config()` 里加；只有它也要暴露成 `.env` 全局项时，才同步 `app/common/config` + `.env.example` + 本表三处 |
-| 加一条图内链（不改代码） | 写一个 `.json` 片段声明放进插件库（全局库直接生效；工作区库还要进 `<工作区>/.my_agent/plugins.json` 的 `trusted`），见"插件库"一节 |
+| 加一条图内链（不改代码） | 写一个 `.json` 片段声明放进插件库（全局库直接生效；工作区库还要进 `<工作区>/.r-agent/plugins.json` 的 `trusted`），见"插件库"一节 |
 | 加可编程插件 | 插件库里放 `.py`：`plugin = {"apply": apply, "name": "..."}`；信任规则同上 |
 | 让 agent 自己改图 | `builtin/graph_tools` 的工具（`add_fragment` / `install_plugin` / `inspect_graph`）：模型写、人点批准、下个回合边界生效；`.py` 要装配时放行 |
-| 加技能 | `<工作区>/.my_agent/skills/<名字>/SKILL.md`，或全局库 `~/.my_agent/skills`；**不用改代码** |
+| 加技能 | `<工作区>/.r-agent/skills/<名字>/SKILL.md`，或全局库 `~/.r-agent/skills`；**不用改代码** |
 | 加项目约定 | 工作区（或任一祖先目录）放 `AGENTS.md`；同目录要覆盖它就用 `AGENTS.override.md` |
 | 加需审批的工具 | 装配时给 `builtin/approvals` 传 `{"required": ["bash"]}`（即时生效） |
 | 换存储 | 换一个 `builtin/store` 插件（服务 `checkpointer` / `index` / `workspaces` / `graph_versions`），或改它的 `sqlite_path` 配置 |

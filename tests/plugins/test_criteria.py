@@ -111,6 +111,6 @@ async def test_real_webui_plugin_serves_the_bundled_frontend(assembled):
 
     response = client.get('/ui/')
     assert response.status_code == 200
-    assert 'my-agent' in response.text or '<html' in response.text.lower()
+    assert 'r-agent' in response.text or '<html' in response.text.lower()
     # 自带资产（vendor）也能取到
     assert client.get('/ui/vendor/marked.umd.js').status_code == 200

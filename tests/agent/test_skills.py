@@ -23,8 +23,8 @@ description: 把材料整理成三段式报告。用户说"用 demo-report"时�
 
 
 def write_skill(root: Path, name: str, text: str, *, bom: bool = False) -> Path:
-    """按真实布局摆：技能在 `<工作区>/.my_agent/skills/<名字>/SKILL.md`。"""
-    directory = root / '.my_agent' / 'skills' / name
+    """按真实布局摆：技能在 `<工作区>/.r-agent/skills/<名字>/SKILL.md`。"""
+    directory = root / '.r-agent' / 'skills' / name
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / 'SKILL.md'
     path.write_text(text, encoding='utf-8-sig' if bom else 'utf-8')

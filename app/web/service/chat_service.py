@@ -96,7 +96,7 @@ class ChatService:
         if skill is None:
             raise InvalidInput(
                 f"没有名为 {name} 的技能（输入 /skills 看可用的）。技能放在 "
-                f"<工作区>/.my_agent/skills/<名字>/SKILL.md，或全局库 ~/.my_agent/skills 里。"
+                f"<工作区>/.r-agent/skills/<名字>/SKILL.md，或全局库 ~/.r-agent/skills 里。"
             )
         args = args.strip()
         title = f"/skill:{skill.name}" + (f" {args}" if args else "")

@@ -72,7 +72,7 @@ def call(name: str, args: dict) -> AIMessage:
 async def make_wired(tmp_path, script: list, *, allow_install: bool = False):
     """真装配：工具箱 + 工作区插件库 + 自改图工具 + 只读图视图。"""
     workspace = tmp_path / 'ws'
-    (workspace / '.my_agent' / 'plugins').mkdir(parents=True)
+    (workspace / '.r-agent' / 'plugins').mkdir(parents=True)
 
     ctx = Context()
     await ctx.plugin(toolbox_plugin.plugin, essential=True)
@@ -142,7 +142,7 @@ async def test_model_writes_fragment_and_human_approves(tmp_path):
         AIMessage(content='加好了', usage_metadata=USAGE),
     ]
     runtime, libraries, workspace = await make_wired(tmp_path, script)
-    target = workspace / '.my_agent' / 'plugins' / 'probe_notes.json'
+    target = workspace / '.r-agent' / 'plugins' / 'probe_notes.json'
 
     frames, snapshot = await run_turn(runtime, workspace, 'self-edit', '给 pre_model 加一条链')
     assert snapshot.interrupts, '应该停在"请求批准"上（走的是现成审批卡）'
@@ -172,7 +172,7 @@ async def test_rejection_keeps_it_pending(tmp_path):
         AIMessage(content='那我先不动它', usage_metadata=USAGE),
     ]
     runtime, libraries, workspace = await make_wired(tmp_path, script)
-    target = workspace / '.my_agent' / 'plugins' / 'probe_notes.json'
+    target = workspace / '.r-agent' / 'plugins' / 'probe_notes.json'
 
     await run_turn(runtime, workspace, 'self-edit', '加一条链')
     await run_turn(runtime, workspace, 'self-edit', inputs=Command(resume='取消'))
@@ -196,7 +196,7 @@ async def test_bad_declaration_is_refused_before_writing(tmp_path):
     frames, snapshot = await run_turn(runtime, workspace, 'self-edit', '加一条链')
 
     assert not snapshot.interrupts
-    assert not (workspace / '.my_agent' / 'plugins' / 'broken.json').exists()
+    assert not (workspace / '.r-agent' / 'plugins' / 'broken.json').exists()
     text = last_tool_text(snapshot)
     assert 'nowhere' in text and '不在骨架锚点表' in text
 
@@ -213,7 +213,7 @@ async def test_install_plugin_is_gated_by_config(tmp_path):
     frames, snapshot = await run_turn(runtime, workspace, 'self-edit', '写个插件')
 
     assert not snapshot.interrupts
-    assert not (workspace / '.my_agent' / 'plugins' / 'probe2.py').exists()
+    assert not (workspace / '.r-agent' / 'plugins' / 'probe2.py').exists()
     assert 'allow_install_plugin' in last_tool_text(snapshot)
 
     # 放行之后：写文件 + 弹卡
@@ -222,7 +222,7 @@ async def test_install_plugin_is_gated_by_config(tmp_path):
     )
     frames, snapshot = await run_turn(runtime2, workspace2, 'self-edit', '写个插件')
     assert snapshot.interrupts
-    assert (workspace2 / '.my_agent' / 'plugins' / 'probe2.py').is_file()
+    assert (workspace2 / '.r-agent' / 'plugins' / 'probe2.py').is_file()
 
 
 async def test_name_with_suffix_is_not_doubled(tmp_path):
@@ -236,8 +236,8 @@ async def test_name_with_suffix_is_not_doubled(tmp_path):
 
     await run_turn(runtime, workspace, 'suffix', '装个插件')
 
-    assert (workspace / '.my_agent' / 'plugins' / 'probe.py').is_file()
-    assert not (workspace / '.my_agent' / 'plugins' / 'probe.py.py').exists()
+    assert (workspace / '.r-agent' / 'plugins' / 'probe.py').is_file()
+    assert not (workspace / '.r-agent' / 'plugins' / 'probe.py.py').exists()
 
 
 async def test_abandon_clears_a_pending_interrupt(tmp_path):

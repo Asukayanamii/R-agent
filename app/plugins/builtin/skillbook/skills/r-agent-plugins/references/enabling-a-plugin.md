@@ -4,14 +4,14 @@
 
 | 库 | 路径 | 信任 |
 | --- | --- | --- |
-| 全局库 | `PLUGINS_DIR`（默认 `~/.my_agent/plugins`） | **装载即信任**（你自己的目录） |
-| 工作区库 | `<会话的工作区>/.my_agent/plugins/` | **按文件批准**：文件名要出现在该工作区 `.my_agent/plugins.json` 的 `trusted` 里 |
+| 全局库 | `PLUGINS_DIR`（默认 `~/.r-agent/plugins`） | **装载即信任**（你自己的目录） |
+| 工作区库 | `<会话的工作区>/.r-agent/plugins/` | **按文件批准**：文件名要出现在该工作区 `.r-agent/plugins.json` 的 `trusted` 里 |
 
 工作区库默认关（`PLUGINS_WORKSPACE=0`）；打开后**作用域 = 会话工作区**——
 A 工作区批准的插件只进 A 的会话，各自一套片段、版本与信任清单。
 
 ```json
-// <工作区>/.my_agent/plugins.json
+// <工作区>/.r-agent/plugins.json
 {"trusted": ["research.json", "notes.py"]}
 ```
 

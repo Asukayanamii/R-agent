@@ -104,8 +104,8 @@ plugin = {
 
 | 放哪 | 谁批准 | 说明 |
 | --- | --- | --- |
-| `PLUGINS_DIR`（默认 `~/.my_agent/plugins`） | **装载即信任** | 你自己的全局库 |
-| `<工作区>/.my_agent/plugins/` | 每个文件要出现在该工作区 `<工作区>/.my_agent/plugins.json` 的 `trusted` 里 | 需 `PLUGINS_WORKSPACE=1`；作用域 = 会话工作区 |
+| `PLUGINS_DIR`（默认 `~/.r-agent/plugins`） | **装载即信任** | 你自己的全局库 |
+| `<工作区>/.r-agent/plugins/` | 每个文件要出现在该工作区 `<工作区>/.r-agent/plugins.json` 的 `trusted` 里 | 需 `PLUGINS_WORKSPACE=1`；作用域 = 会话工作区 |
 
 - **一个文件一个插件**：`.py`（可编程）/ `.json`（纯声明）；`_` 开头的是作者的辅助文件，不当插件。
 - **写文件 ≠ 生效**：没进信任清单就不会被装载，只在报告里点"待批准"。信任清单在沙箱里是**硬阻断区**
@@ -131,7 +131,7 @@ plugin = {
 
 | 现象 | 原因 | 对策 |
 | --- | --- | --- |
-| 日志点"待批准" | 文件没进信任清单 | 让人批准，或写进 `<工作区>/.my_agent/plugins.json` |
+| 日志点"待批准" | 文件没进信任清单 | 让人批准，或写进 `<工作区>/.r-agent/plugins.json` |
 | 报 `INTERFACE_MISSING` | 片段里的 `interface` 还没有服务提供 | 先装提供该服务的插件，或换服务名 |
 | 报 `ANCHOR_UNKNOWN` | 锚点不是骨架声明的五个之一 | 用 `inspect_graph` 看锚点表 |
 | 报 `FRAGMENT_DUPLICATE` | 同一作用域里片段 `id` 重复 | 换 `id`（不同工作区可以同名） |

@@ -23,7 +23,7 @@ pytestmark = pytest.mark.anyio
 def make_workspace(tmp_path: Path, name: str, node: str) -> Path:
     """一个工作区 + 一条待批准片段（声明里挂一个抽象节点，实现由 `probe` 服务给）。"""
     workspace = tmp_path / name
-    directory = workspace / '.my_agent' / 'plugins'
+    directory = workspace / '.r-agent' / 'plugins'
     directory.mkdir(parents=True)
     (directory / f'{name}.json').write_text(
         json.dumps(

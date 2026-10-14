@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置：把 my-agent（R-agent）整体打成可运行目录。
+"""PyInstaller 打包配置：把 R-agent 整体打成可运行目录。
 
     pip install pyinstaller
     pyinstaller --clean --noconfirm packaging/r-agent.spec

@@ -1,6 +1,6 @@
 """沙箱授权文件的硬阻断（A3 用例）与策略槽（K2 用例）。
 
-授权文件（`<工作区>/.my_agent/sandbox.json` 与 `~/.my_agent/sandbox.json`）读写都
+授权文件（`<工作区>/.r-agent/sandbox.json` 与 `~/.r-agent/sandbox.json`）读写都
 **硬阻断、永不提示**：内存缓存优先让写入当场不生效，但重启后会被采纳——那是真实的
 持久化越权路径。同时不能误伤：只拦这两个文件本身，工作区里同名文件和技能目录照常。
 
@@ -52,7 +52,7 @@ def test_workspace_auth_file_is_hard_blocked(workspace, mode, prompts):
 
 @pytest.mark.parametrize('mode', [sandbox.READ, sandbox.WRITE])
 def test_global_auth_file_is_hard_blocked(workspace, mode, prompts):
-    # 只做路径判定，不碰用户的真实 ~/.my_agent/sandbox.json（拒绝发生在任何读写之前）
+    # 只做路径判定，不碰用户的真实 ~/.r-agent/sandbox.json（拒绝发生在任何读写之前）
     target = Path.home() / sandbox.CONFIG_DIR / sandbox.CONFIG_FILE
 
     with pytest.raises(SandboxDenied) as info:

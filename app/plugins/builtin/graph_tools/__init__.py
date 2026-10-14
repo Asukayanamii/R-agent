@@ -42,7 +42,7 @@ class Config(Schema):
 
 
 def plugins_dir() -> Path:
-    """当前工作区的插件库目录（`<工作区>/.my_agent/plugins/`）。"""
+    """当前工作区的插件库目录（`<工作区>/.r-agent/plugins/`）。"""
     from app.common.config import CONFIG_DIR
 
     return current_workspace.get() / CONFIG_DIR / 'plugins'

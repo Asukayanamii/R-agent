@@ -39,8 +39,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="my-agent",
-    description="my-agent后端",
+    title="r-agent",
+    description="r-agent后端",
     version="0.0.1",
     lifespan=lifespan,
     # 所有接口都可能走到下面注册的全局处理器，错误形状在文档里也写出来

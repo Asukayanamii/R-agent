@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>my-agent</title>
+<title>r-agent</title>
 <style>
   /* ============================================================
      主题令牌。切换主题只改这一层，组件样式不含任何硬编码颜色。
@@ -887,7 +887,7 @@
   <div class="side-label">会话</div>
   <div id="threads"></div>
   <div class="side-bottom">
-    <span class="who" id="who">my-agent</span>
+    <span class="who" id="who">r-agent</span>
     <button class="icon-btn" id="themeBtn">主题</button>
   </div>
 </aside>
@@ -895,7 +895,7 @@
 <div id="main">
   <div class="topbar">
     <button class="icon-btn" id="sideBtn">≡</button>
-    <span class="name">my-agent</span>
+    <span class="name">r-agent</span>
     <button class="ws-chip" id="wsBtn" title="切换工作区（沙箱的信任边界）">
       <span class="icon">⌂</span><span class="label" id="wsLabel">工作区</span>
     </button>
@@ -1156,7 +1156,7 @@ async function loadThreads() {
     // 还没有任何上下文时，新对话落在默认工作区（应用所在目录）
     if (!threadId && !pendingWs && defaultWs) pendingWs = defaultWs.path;
   } catch (err) {
-    console.warn("[my-agent] 加载会话列表失败", err);
+    console.warn("[r-agent] 加载会话列表失败", err);
     threads = [];
   }
   renderThreads();
@@ -1182,7 +1182,7 @@ function recall(key, fallback) {
     const raw = localStorage.getItem(key);
     return raw === null ? fallback : JSON.parse(raw);
   } catch (err) {
-    console.warn(`[my-agent] localStorage.${key} 读取失败，用默认值`, err);
+    console.warn(`[r-agent] localStorage.${key} 读取失败，用默认值`, err);
     return fallback;
   }
 }
@@ -1190,7 +1190,7 @@ function remember(key, value) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch (err) {
-    console.warn(`[my-agent] localStorage.${key} 写入失败（本次会话内仍然生效）`, err);
+    console.warn(`[r-agent] localStorage.${key} 写入失败（本次会话内仍然生效）`, err);
   }
 }
 
@@ -1711,7 +1711,7 @@ function structNote(title, detail, summaryLabel) {
       try {
         window.mermaid.run({ nodes: [graph] });
       } catch (err) {
-        console.warn("[my-agent] mermaid 渲染失败，展示源码", err);
+        console.warn("[r-agent] mermaid 渲染失败，展示源码", err);
       }
     }
     box.appendChild(det);
@@ -1879,7 +1879,7 @@ function newTurn() {
     },
 
     error(d) {
-      console.warn("[my-agent] 对话流返回 error", { code: d.code, message: d.message });
+      console.warn("[r-agent] 对话流返回 error", { code: d.code, message: d.message });
       ctx.sawError = true;
       caret.remove();
       body.appendChild(el("div", "errbox", `[${d.code}] ${d.message}`));
@@ -1977,7 +1977,7 @@ function handleStreamError(err, ctx) {
     ctx.error({ code: -1, message: String(err.message || err) });
     return;
   }
-  console.warn("[my-agent] 流被中断", err);
+  console.warn("[r-agent] 流被中断", err);
 }
 
 /* 一轮结束后的收尾：既没 done、也没 message_end，就是被中断了 */
@@ -2052,7 +2052,7 @@ async function runTurn(message, call) {
     if (ctx) handleStreamError(err, ctx);
     else {
       // 还没开跑就出错：别只留一条控制台报错，界面得说出发生了什么，草稿也得还回去
-      console.error("[my-agent] 这一轮没能开始", err);
+      console.error("[r-agent] 这一轮没能开始", err);
       showError(`这一轮没能开始：${err.message || err}`);
       input.value = draft;
       resizeInput();
@@ -2070,7 +2070,7 @@ async function runTurn(message, call) {
     try {
       await loadThreads();
     } catch (err) {
-      console.warn("[my-agent] 刷新会话列表失败", err);
+      console.warn("[r-agent] 刷新会话列表失败", err);
     }
     // 这一轮没能留下可点的卡片、但会话仍挂着待确认（典型：上次点卡片时 resume 失败了）——
     // 把它重新画出来，别让用户落进"发什么都只能排队"的死角
@@ -2094,7 +2094,7 @@ async function send(text, fromOutbox = false) {
       return;
     }
   }
-  console.debug("[my-agent] 发送", { threadId, pendingWs, chars: message.length });
+  console.debug("[r-agent] 发送", { threadId, pendingWs, chars: message.length });
 
   // 运行中（或在等确认）不打断、也不丢消息：排进待发送，本轮结束后自动补发。
   // 和 Claude Code 一样：Enter 是排队；要停下当前这轮用停止按钮 / Esc。
@@ -2157,7 +2157,7 @@ async function restorePendingCard() {
     }
     toBottom();
   } catch (err) {
-    console.warn("[my-agent] 待确认卡片恢复失败", err);
+    console.warn("[r-agent] 待确认卡片恢复失败", err);
   }
 }
 
@@ -2184,7 +2184,7 @@ async function resume(value) {
     try {
       await loadThreads();
     } catch (err) {
-      console.warn("[my-agent] 刷新会话列表失败", err);
+      console.warn("[r-agent] 刷新会话列表失败", err);
     }
     // 这次 resume 失败、卡片又已经消耗掉了：把待确认卡片重新画出来（同 runTurn 的说明）
     if (!ctx.sawInterrupt && threadPending()) await restorePendingCard();
@@ -2194,7 +2194,7 @@ async function resume(value) {
 
 async function openThread(id) {
   if (busy) return;
-  console.debug("[my-agent] 打开会话", id);
+  console.debug("[r-agent] 打开会话", id);
   threadId = id;
   outbox = [];
   outboxThread = null;
@@ -2344,7 +2344,7 @@ async function bindWorkspace(id, path) {
    目录不可用时把状态复位并抛出——反馈交给调用方，页内面板与桌面弹窗各有各的落点。 */
 async function switchWorkspace(path) {
   if (busy) return;
-  console.info("[my-agent] 切换工作区", path || "(默认)");
+  console.info("[r-agent] 切换工作区", path || "(默认)");
   startPendingChat(path);
   if (!path) return;
   try {
@@ -2739,7 +2739,7 @@ async function refreshSkills(force = false) {
   } catch (err) {
     // 拿不到就当没有：补全缺几项不该弹错误框；/skills 会给出明确回报
     skillItems = [];
-    console.debug("[my-agent] 技能清单读取失败", err);
+    console.debug("[r-agent] 技能清单读取失败", err);
   } finally {
     skillFetching = false;
   }
@@ -2855,8 +2855,8 @@ async function listSkills() {
     if (!items.length) {
       addNote(
         `这个工作区还没有技能（${body.data.workspace}）。\n` +
-          "放一个 <工作区>/.my_agent/skills/<名字>/SKILL.md 就有了，" +
-          "也可以放进全局库 ~/.my_agent/skills。"
+          "放一个 <工作区>/.r-agent/skills/<名字>/SKILL.md 就有了，" +
+          "也可以放进全局库 ~/.r-agent/skills。"
       );
       return;
     }
@@ -2912,7 +2912,7 @@ document.getElementById("themeBtn").onclick = () => {
   try {
     localStorage.setItem("theme", next);
   } catch (err) {
-    console.warn("[my-agent] 主题偏好写不进 localStorage（本次会话内仍然生效）", err);
+    console.warn("[r-agent] 主题偏好写不进 localStorage（本次会话内仍然生效）", err);
   }
 };
 
@@ -2925,7 +2925,7 @@ try {
   // 早期版本把会话清单存在 localStorage 里，现在清单只有服务端一个来源，清掉残留
   localStorage.removeItem("threads");
 } catch (err) {
-  console.warn("[my-agent] localStorage 不可用，用默认主题", err);
+  console.warn("[r-agent] localStorage 不可用，用默认主题", err);
 }
 
 (async () => {

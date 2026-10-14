@@ -36,7 +36,7 @@ async def research_node(state: dict) -> dict:
 
 
 def plugins_dir(workspace: Path) -> Path:
-    return workspace / '.my_agent' / 'plugins'
+    return workspace / '.r-agent' / 'plugins'
 
 
 def write_plugin(directory: Path, payload=FRAGMENT, name: str = 'research.json') -> Path:
@@ -47,7 +47,7 @@ def write_plugin(directory: Path, payload=FRAGMENT, name: str = 'research.json')
 
 
 def approve(workspace: Path, *names: str) -> None:
-    target = workspace / '.my_agent' / 'plugins.json'
+    target = workspace / '.r-agent' / 'plugins.json'
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps({'trusted': list(names)}, ensure_ascii=False), encoding='utf-8')
 
@@ -149,7 +149,7 @@ async def test_global_library_is_trusted(tmp_path):
 async def test_workspace_python_plugin_needs_approval(tmp_path):
     """工作区 `.py` 插件装载即执行代码——同样只认授权清单里的文件名。"""
     runtime = await make_runtime_with_impl()
-    directory = tmp_path / '.my_agent' / 'plugins'
+    directory = tmp_path / '.r-agent' / 'plugins'
     directory.mkdir(parents=True)
     (directory / 'notes.py').write_text(
         'async def node(state):\n'
@@ -310,7 +310,7 @@ async def test_plugin_inventory_tells_what_is_going_on(tmp_path):
     )
 
     workspace = tmp_path / 'ws'
-    plugins = workspace / '.my_agent' / 'plugins'
+    plugins = workspace / '.r-agent' / 'plugins'
     plugins.mkdir(parents=True)
     good = {
         'id': 'workspace/good',
@@ -432,7 +432,7 @@ async def test_edit_conflict_is_reloaded_from_content(tmp_path):
 
 async def test_broken_declarations_are_reported_not_fatal(tmp_path):
     runtime = await make_runtime_with_impl()
-    directory = tmp_path / '.my_agent' / 'plugins'
+    directory = tmp_path / '.r-agent' / 'plugins'
     directory.mkdir(parents=True)
     (directory / 'bad-json.json').write_text('{ 不是 JSON', encoding='utf-8')
     (directory / 'missing-impl.json').write_text(

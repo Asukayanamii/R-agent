@@ -34,7 +34,7 @@ PROJECT_ROOT = APP_DIR
 if not FROZEN and not (PROJECT_ROOT / "requirements.txt").is_file():
     raise RuntimeError(f"PROJECT_ROOT 算错了，指向 {PROJECT_ROOT}")
 
-CONFIG_DIR = ".my_agent"
+CONFIG_DIR = ".r-agent"
 """应用在工作区/用户目录下用的隐藏目录名。
 
 沙箱授权（`sandbox.json`）、技能库（`skills/`）、项目约定（`AGENTS.md`）都住在这个名字下，
@@ -45,7 +45,7 @@ HOME_DIR = Path.home() / CONFIG_DIR
 """用户目录下的应用目录：插件库、技能库、会话库、用户配置的默认落点。
 
 **打包后所有可写的东西都落在这里**（安装目录只读/不该被写）；源码运行也认它，
-但默认值仍偏向工程目录下那份（`./data`、`~/.my_agent/plugins`）——老用户的位置不变。
+但默认值仍偏向工程目录下那份（`./data`、`~/.r-agent/plugins`）——老用户的位置不变。
 """
 
 USER_ENV = HOME_DIR / ".env"
@@ -59,7 +59,7 @@ def _load_env() -> None:
     """三层配置，优先级 **真环境变量 > 用户级 `.env` > 应用级 `.env`**。
 
     `load_dotenv` 默认不覆盖已有值，所以顺序是：先记下真环境变量 → 应用级 → 用户级（覆盖）
-    → 把真环境变量盖回来。写死这个顺序，是因为"用户在 `~/.my_agent/.env` 里改了插件库位置，
+    → 把真环境变量盖回来。写死这个顺序，是因为"用户在 `~/.r-agent/.env` 里改了插件库位置，
     却被安装目录里那份默认值盖掉"是最难查的一类问题（表现是"改了没反应"）。
     """
     preset = dict(os.environ)
@@ -84,7 +84,7 @@ def _ensure_user_env() -> None:
 
 
 USER_ENV_TEMPLATE = """\
-# my-agent 用户配置（打包后首次启动自动生成）
+# r-agent 用户配置（打包后首次启动自动生成）
 #
 # 优先级：真环境变量 > 这个文件 > 安装目录旁的 .env > 代码默认值
 # **每一行默认都是注释掉的**：不改这个文件 = 全用默认值；要改就把对应行取消注释。
@@ -99,11 +99,11 @@ USER_ENV_TEMPLATE = """\
 
 # ---- 库的位置（都支持 ~ 与相对本文件的路径）----
 # 全局插件库：`.py`（可编程）/ `.json`（纯片段声明），装载即信任
-# PLUGINS_DIR=~/.my_agent/plugins
-# 全局技能库（`SKILL.md` 形态）；工作区技能库固定在 <工作区>/.my_agent/skills
-# SKILLS_DIR=~/.my_agent/skills
+# PLUGINS_DIR=~/.r-agent/plugins
+# 全局技能库（`SKILL.md` 形态）；工作区技能库固定在 <工作区>/.r-agent/skills
+# SKILLS_DIR=~/.r-agent/skills
 # 会话/审计库
-# SQLITE_PATH=~/.my_agent/data/checkpoints.db
+# SQLITE_PATH=~/.r-agent/data/checkpoints.db
 
 # ---- 插件开关 ----
 # 工作区插件库（按会话工作区分区、每个文件要人工批准）
@@ -246,9 +246,9 @@ def library_paths() -> dict[str, str]:
 # 两者都只做**提示词注入**，没有任何检索：索引全量进系统提示词，匹不匹配交给模型判断。
 SKILLS_ENABLED = os.getenv("SKILLS_ENABLED", "1").strip() != "0"
 
-# 全局技能库。工作区技能库固定在 `<工作区>/.my_agent/skills`，不用配。
+# 全局技能库。工作区技能库固定在 `<工作区>/.r-agent/skills`，不用配。
 # 它同时是沙箱的"受信只读根"：模型读这里的正文不弹授权卡片（只读，写仍要授权）。
-SKILLS_DIR = _resolve(os.getenv("SKILLS_DIR", "~/.my_agent/skills"))
+SKILLS_DIR = _resolve(os.getenv("SKILLS_DIR", "~/.r-agent/skills"))
 
 AGENTS_MD_ENABLED = os.getenv("AGENTS_MD_ENABLED", "1").strip() != "0"
 
@@ -260,11 +260,11 @@ AGENTS_ANCESTORS = os.getenv("AGENTS_ANCESTORS", "1").strip() != "0"
 PLUGINS_ENABLED = os.getenv("PLUGINS_ENABLED", "1").strip() != "0"
 
 # 全局插件库：`.py`（可编程）/ `.json`（纯片段声明）；**装载即信任**。
-PLUGINS_DIR = _resolve(os.getenv("PLUGINS_DIR", "~/.my_agent/plugins"))
+PLUGINS_DIR = _resolve(os.getenv("PLUGINS_DIR", "~/.r-agent/plugins"))
 
 # 工作区插件库：**默认关**（§5.1）。置 1 = 每个会话按自己的工作区扫
-# `<该工作区>/.my_agent/plugins/`，且每个文件要在该工作区的授权清单
-# （`<该工作区>/.my_agent/plugins.json` 的 trusted）里才装载——"首次需审批、按工作区持久化"。
+# `<该工作区>/.r-agent/plugins/`，且每个文件要在该工作区的授权清单
+# （`<该工作区>/.r-agent/plugins.json` 的 trusted）里才装载——"首次需审批、按工作区持久化"。
 # 打开后每个工作区各自一套插件与图版本：A 批准的插件不影响 B 的会话。
 PLUGINS_WORKSPACE = os.getenv("PLUGINS_WORKSPACE", "0").strip() in ("1", "true", "yes")
 
