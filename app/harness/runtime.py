@@ -308,3 +308,21 @@ class HarnessRuntime:
             logger.warning("重合成失败，本轮继续用当前版本：%s", error)
         async with self.registry(scope).lease(thread_id) as version:
             yield version
+
+    async def checkpoint_has_interrupt(self, thread_id: str) -> bool:
+        """检查点里还挂着一个未消费的中断吗——**不看当前结构，只查原始记录**。
+
+        用途是把"读不出来"和"真的没有"分开：`StateSnapshot.tasks/interrupts` 是
+        LangGraph 用**读取方自己的节点表**重建的（`prepare_next_tasks(..., self.nodes, ...)`）——
+        中断所在节点被结构变更摘掉后，任何图都会把它读成"没有"，只有检查点里的
+        `__interrupt__` 残留写还在。`resume` 据此给出"结构已变更"的明确报错。
+
+        读的是**最新一层**检查点（`aget_tuple` 不带 checkpoint_id 即最新）：
+        发新消息后检查点往前走，残留写留在旧层里，不会把历史上的中断误报成"还挂着"。
+        """
+        saved = await self.checkpointer.aget_tuple({'configurable': {'thread_id': thread_id}})
+        if saved is None:
+            return False
+        # '__interrupt__' 是 LangGraph 的内部通道名（langgraph/_internal/_constants.py），
+        # 没有公开出口——单点收口在这里；哪天它改名，用例会当场红，不会静默失效。
+        return any(write[1] == '__interrupt__' for write in (saved.pending_writes or []))

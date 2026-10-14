@@ -84,16 +84,23 @@ class AgentRunner(Protocol):
         """
         ...
 
-    async def is_interrupted(self, thread_id: str) -> bool:
-        """该会话是否停在待人工确认处。"""
+    async def is_interrupted(self, thread_id: str, workspace: str | None = None) -> bool:
+        """
+        该会话是否停在待人工确认处。
+
+        `workspace` 决定读**哪张图**：任务列表按读取图自己的节点表重建，中断落在工作区
+        片段节点上时，只有该作用域的图能读出来（读法见 `LangGraphRunner` 的说明）。
+        """
         ...
 
-    async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
+    async def pending_interrupts(
+        self, thread_id: str, workspace: str | None = None
+    ) -> list[InterruptData]:
         """
         取出该会话当前挂着的待确认项。
 
         用于在用户绕过确认、直接发新消息时把确认卡片重新推给前端——
-        用户面对的是界面，没法自己去调 /chat/resume。
+        用户面对的是界面，没法自己去调 /chat/resume。`workspace` 同 `is_interrupted`。
         """
         ...
 
@@ -109,13 +116,14 @@ class AgentRunner(Protocol):
         """
         ...
 
-    async def repair_after_abort(self, thread_id: str) -> int:
+    async def repair_after_abort(self, thread_id: str, workspace: str | None = None) -> int:
         """
         一轮被中断（用户点了停止、连接断了、进程被关）之后，把状态修回"可继续"。
 
         中断可能停在"模型已经要求调工具、工具还没回结果"的位置，那种悬空调用对 provider
         而言是非法历史，下一次发消息会被拒。这里给缺结果的调用补一条"已中断"的回复，
-        返回补了几条。
+        返回补了几条。`workspace` 同 `is_interrupted`——读错图会把"停在片段节点上"
+        误判成"可以修"。
 
         **停在待确认（interrupt）上的会话不能动**——那是合法状态，用户点确认就能继续。
         """
@@ -154,17 +162,19 @@ class StubRunner:
         self._pending.pop(thread_id, None)
         self._history.pop(thread_id, None)
 
-    async def is_interrupted(self, thread_id: str) -> bool:
+    async def is_interrupted(self, thread_id: str, workspace: str | None = None) -> bool:
         return thread_id in self._pending
 
-    async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
+    async def pending_interrupts(
+        self, thread_id: str, workspace: str | None = None
+    ) -> list[InterruptData]:
         pending = self._pending.get(thread_id)
         return [pending] if pending is not None else []
 
     async def has_dangling_tool_calls(self, thread_id: str) -> bool:
         return False
 
-    async def repair_after_abort(self, thread_id: str) -> int:
+    async def repair_after_abort(self, thread_id: str, workspace: str | None = None) -> int:
         """内存实现没有"悬空调用"这回事：中断即忘。"""
         return 0
 
