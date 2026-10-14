@@ -120,6 +120,20 @@ class LangGraphRunner:
         async with self.runtime.lease(thread_id, scope=workspace or '') as version:
             snapshot = await version.graph.aget_state(config)
             if not snapshot.interrupts:
+                # 图读不出中断有两种情况：真的没有；或者**有，但当前结构重建不出来**——
+                # 任务列表按读取图自己的节点表重建（见 runtime.checkpoint_has_interrupt 的
+                # 说明），中断所在节点被结构变更摘掉后，任何图都会把它读成"没有"。
+                # 去检查点里看真相，把两种"没有"分开报。
+                if await self.runtime.checkpoint_has_interrupt(thread_id):
+                    yield ErrorEvent(
+                        data=ErrorData(
+                            message=(
+                                "结构已变更：待确认的操作所在节点不在当前运行图里，无法继续。"
+                                "请放弃这次待确认后重新提问。"
+                            )
+                        )
+                    )
+                    return
                 yield ErrorEvent(
                     data=ErrorData(message="该会话没有待确认的操作，无需 resume")
                 )
@@ -212,14 +226,23 @@ class LangGraphRunner:
         await self.checkpointer.adelete_thread(thread_id)
         logger.debug("已删除检查点 thread=%s", thread_id)
 
-    async def is_interrupted(self, thread_id: str) -> bool:
-        async with self.runtime.lease(thread_id) as version:
-            snapshot = await version.graph.aget_state(self._config(thread_id))
+    async def is_interrupted(self, thread_id: str, workspace: str | None = None) -> bool:
+        """该会话是否停在待人工确认处。
+
+        `workspace` 决定读**哪张图**：任务列表（`snapshot.tasks/interrupts`）是 LangGraph
+        用读取方自己的节点表重建的——中断落在某工作区的片段节点上时，只有那个作用域的图
+        能把它读出来，全局图会读成"没有"。调用方（`chat_service`）一律把工作区带上。
+        """
+        async with self.runtime.lease(thread_id, scope=workspace or '') as version:
+            snapshot = await version.graph.aget_state(self._config(thread_id, workspace))
         return bool(snapshot.interrupts)
 
-    async def pending_interrupts(self, thread_id: str) -> list[InterruptData]:
-        async with self.runtime.lease(thread_id) as version:
-            snapshot = await version.graph.aget_state(self._config(thread_id))
+    async def pending_interrupts(
+        self, thread_id: str, workspace: str | None = None
+    ) -> list[InterruptData]:
+        """该会话挂着的待确认项（`workspace` 同 `is_interrupted`）。"""
+        async with self.runtime.lease(thread_id, scope=workspace or '') as version:
+            snapshot = await version.graph.aget_state(self._config(thread_id, workspace))
         return [to_interrupt_data(item) for item in snapshot.interrupts]
 
     async def has_dangling_tool_calls(self, thread_id: str) -> bool:
@@ -227,17 +250,19 @@ class LangGraphRunner:
             snapshot = await version.graph.aget_state(self._config(thread_id))
         return bool(unanswered_calls(snapshot.values.get("messages", [])))
 
-    async def repair_after_abort(self, thread_id: str) -> int:
+    async def repair_after_abort(self, thread_id: str, workspace: str | None = None) -> int:
         """
         一轮被中断后把状态修回"可继续"。
 
         用 `aupdate_state(..., as_node="tools")` 补上"已中断"的 ToolMessage，等于告诉
         LangGraph 这些调用有结果了：消息链重新合法，下一次发消息照常从 agent 走。
+        `workspace` 决定读**哪张图**（同 `is_interrupted`）：读错图会把"停在片段节点上"
+        误判成"可以修"。
 
         停在待确认（interrupt）上的会话**不动**——那是合法状态，点确认就能继续。
         """
-        config = self._config(thread_id)
-        async with self.runtime.lease(thread_id) as version:
+        config = self._config(thread_id, workspace)
+        async with self.runtime.lease(thread_id, scope=workspace or '') as version:
             snapshot = await version.graph.aget_state(config)
             if snapshot.interrupts:
                 return 0

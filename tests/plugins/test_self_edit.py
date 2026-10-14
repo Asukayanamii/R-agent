@@ -259,12 +259,12 @@ async def test_abandon_clears_a_pending_interrupt(tmp_path):
         item async for item in runner.stream('t1', '加一条链', workspace=str(workspace))
     ]
     assert any(item.type == 'interrupt' for item in frames)
-    assert await runner.is_interrupted('t1')
+    assert await runner.is_interrupted('t1', str(workspace))
 
     count = await runner.abandon('t1', str(workspace))
 
     assert count == 1
-    assert not await runner.is_interrupted('t1')
+    assert not await runner.is_interrupted('t1', str(workspace))
     # 之后能继续发新消息（不再被"待确认"挡住）
     frames = [item async for item in runner.stream('t1', '继续', workspace=str(workspace))]
     assert not any(item.type == 'error' for item in frames), [item.model_dump() for item in frames]
@@ -287,7 +287,7 @@ async def test_abandon_repairs_dangling_calls(tmp_path):
 
     runner = LangGraphRunner(runtime, runtime.ctx.get('protocol'))
     [item async for item in runner.stream('t1', '加一条链', workspace=str(workspace))]
-    assert await runner.is_interrupted('t1')
+    assert await runner.is_interrupted('t1', str(workspace))
 
     # 硬发（无视待确认）：这就是"卡成悬空调用"的产生方式
     try:

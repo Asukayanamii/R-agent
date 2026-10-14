@@ -66,9 +66,9 @@ class ChatService:
             logger.warning("技能库现取失败，按没有内置库处理：%s", error)
             return ()
 
-    async def _stuck_reason(self, thread_id: str) -> str | None:
+    async def _stuck_reason(self, thread_id: str, workspace: str | None = None) -> str | None:
         """会话是否卡着（用于索引里的 pending 标记）。"""
-        if await self._runner.is_interrupted(thread_id):
+        if await self._runner.is_interrupted(thread_id, workspace):
             return "待确认"
         if await self._runner.has_dangling_tool_calls(thread_id):
             return "有悬空工具调用"
@@ -114,7 +114,10 @@ class ChatService:
 
         标题单独传而不是从消息推：技能调用的消息是整份 `SKILL.md`。
         """
-        pending = await self._runner.pending_interrupts(thread_id)
+        # 先解析工作区：读"有没有待确认"要按它选图——中断可能落在某工作区的片段节点上，
+        # 全局图读不出那些任务（见 `LangGraphRunner.is_interrupted` 的说明）。
+        workspace = await self._scope_workspace(thread_id)
+        pending = await self._runner.pending_interrupts(thread_id, workspace)
         if pending:
             # 用户绕过了确认、直接又发了一条消息。这里不能只回一句"请先调用
             # /chat/resume"——他面对的是界面，没法自己构造请求，只会卡住。
@@ -132,10 +135,8 @@ class ChatService:
             # 上一轮被中断（用户停止、连接断开、进程被关）会留下没人回应的工具调用，
             # provider 会直接拒掉下一次请求。先补一条"已中断"的结果，会话就还能接着用——
             # **中断之后不追究是谁导致的**，手动停止与意外断开是同一种状态、同一套修复。
-            fixed = await self._runner.repair_after_abort(thread_id)
+            fixed = await self._runner.repair_after_abort(thread_id, workspace)
             logger.info("会话有悬空调用，补 %d 条后继续 thread=%s", fixed, thread_id)
-
-        workspace = await self._scope_workspace(thread_id)
         logger.info(
             "对话开始 thread=%s 消息=%d 字 工作区=%s",
             thread_id,
@@ -148,9 +149,9 @@ class ChatService:
             ):
                 yield event
         except asyncio.CancelledError:
-            self._schedule_settle(thread_id, title=title)
+            self._schedule_settle(thread_id, title=title, workspace=workspace)
             raise
-        await self._record(thread_id, title=title)
+        await self._record(thread_id, title=title, workspace=workspace)
 
     async def resume(self, thread_id: str, value: str) -> AsyncIterator[BaseModel]:
         workspace = await self._scope_workspace(thread_id)
@@ -166,26 +167,26 @@ class ChatService:
             ):
                 yield event
         except asyncio.CancelledError:
-            self._schedule_settle(thread_id, title="")
+            self._schedule_settle(thread_id, title="", workspace=workspace)
             raise
-        await self._record(thread_id, title="")
+        await self._record(thread_id, title="", workspace=workspace)
 
-    def _schedule_settle(self, thread_id: str, title: str) -> None:
+    def _schedule_settle(self, thread_id: str, title: str, workspace: str) -> None:
         """
         一轮被中断后的收尾：补索引行 + 修掉悬空调用。
 
         **丢进独立任务，不在取消路径上 await**：取消已经落在当前任务上了，原地 await
         可能被第二次取消打断；独立任务能跑完。手动停止、连接断开、进程被关都走这里。
         """
-        task = asyncio.create_task(self._settle_aborted(thread_id, title))
+        task = asyncio.create_task(self._settle_aborted(thread_id, title, workspace))
         _settle_tasks.add(task)
         task.add_done_callback(_settle_tasks.discard)
 
-    async def _settle_aborted(self, thread_id: str, title: str) -> None:
+    async def _settle_aborted(self, thread_id: str, title: str, workspace: str) -> None:
         try:
-            repaired = await self._runner.repair_after_abort(thread_id)
+            repaired = await self._runner.repair_after_abort(thread_id, workspace)
             # 标题照常记：首轮就被中断的新会话也要以那句话出现在列表里
-            await self._record(thread_id, title=title)
+            await self._record(thread_id, title=title, workspace=workspace)
             logger.info("本轮被中断 thread=%s 已修复悬空调用 %d 个", thread_id, repaired)
         except Exception:
             logger.exception("中断后的收尾失败 thread=%s", thread_id)
@@ -279,7 +280,7 @@ class ChatService:
         logger.info("绑定工作区 thread=%s -> %s", thread_id, bound)
         return bound
 
-    async def _record(self, thread_id: str, title: str) -> None:
+    async def _record(self, thread_id: str, title: str, workspace: str) -> None:
         """
         一轮对话结束后刷新索引。
 
@@ -287,7 +288,7 @@ class ChatService:
         "中断态被新消息破坏、留下悬空 tool_calls"的坏死会话——那种会话同样需要
         用户注意，只是不能再 resume，只能新建。
         """
-        pending = await self._stuck_reason(thread_id) is not None
+        pending = await self._stuck_reason(thread_id, workspace) is not None
         logger.debug(
             "刷新索引 thread=%s 标题=%s pending=%s",
             thread_id,
@@ -316,7 +317,7 @@ class ChatService:
         """
         workspace = await self._scope_workspace(thread_id)
         count = await self._runner.abandon(thread_id, workspace)
-        await self._record(thread_id, title="")   # title 空串不会覆盖已有标题（见 DAO）
+        await self._record(thread_id, title="", workspace=workspace)   # title 空串不会覆盖已有标题（见 DAO）
         logger.info("放弃待确认 thread=%s 条数=%d", thread_id, count)
         return count
 
@@ -362,7 +363,8 @@ class ChatService:
         前端打开历史会话时要拿到它才能渲染确认卡片——否则一个卡住的会话
         虽然侧边栏有红点，用户进去却无处可点。
         """
-        return await self._runner.pending_interrupts(thread_id)
+        workspace = await self._scope_workspace(thread_id)
+        return await self._runner.pending_interrupts(thread_id, workspace)
 
     async def threads(self, limit: int = 50) -> list[ThreadSummary]:
         records = await self._index.list_threads(limit)
