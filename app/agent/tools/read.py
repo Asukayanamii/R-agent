@@ -10,7 +10,7 @@ from app.agent.tools.common import (
     rel,
     truncate_head,
 )
-from app.exceptions import SandboxDenied
+from app.common.exceptions import SandboxDenied
 
 
 @tool
@@ -22,9 +22,15 @@ async def read(path: str, offset: int = 1, limit: int = MAX_LINES) -> str:
     - 内容过长时只保留开头，并在末尾提示下次该用哪个 offset
     - 二进制文件会被拒绝，那种情况请改用 bash
     - 返回的行号前缀仅供定位，不要写进 edit 的匹配文本里
+    - **要读好几段/好几个文件用 `read_many`**：一次调用全带回，别一段一次
     - **要读文件就用这个**，别用 bash 的 cat / head / tail / sed -n：这里带行号、
       支持分页续读，超长时还会告诉你下次从哪一行接着读
     """
+    return read_text(path, offset, limit)
+
+
+def read_text(path: str, offset: int = 1, limit: int = MAX_LINES) -> str:
+    """读取本体（与 `@tool` 壳分开）：批量工具要一次读好几段，直接复用这里。"""
     try:
         target = guard_path(path, READ)
     except SandboxDenied as exc:

@@ -1,0 +1,209 @@
+"""agent 的图节点实现：模型调用与压缩检查。
+
+节点本身很薄——真正的活儿在 `tool_calls` / `compaction.runtime` / `prompts` 里，这里只负责
+把它们接成"图上的一个节点"该有的形状：读状态、调服务、回写更新。
+
+独立成模块是因为**图的组装已经不在这里**：结构由 `app/harness` 从 `builtin/loop` 插件的
+骨架片段合成，节点实现作为普通 callable 交给片段声明。`RECURSION_LIMIT` / `log_step_limit`
+也留在这里——它们描述的是"这一轮图能跑多长"，和节点同属 agent 运行时。
+"""
+
+import logging
+from time import monotonic
+from typing import Any
+
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.config import get_config
+
+from app.agent.compaction.policy import with_summary
+from app.agent.compaction.runtime import compact_once
+from app.agent.messages import usable_compaction
+from app.agent.prompts import build_system_prompt
+from app.agent.usage import cache_read_tokens
+
+logger = logging.getLogger(__name__)
+
+RECURSION_LIMIT = 10_000
+"""单轮图的 superstep 上限（LangGraph 的 recursion_limit）。
+
+LangGraph 逼着必须给一个有限值（默认只有 25），但这个值不该成为"复杂任务跑一半挂掉"的原因：
+
+- 我们的图一个工具回合要花 3 步（`tools → compact → agent`），25 步只够 7 个回合；
+- 主流 coding agent 基本不设上限（Pi 的 agent loop 是 `while (true)`，只在模型不再调工具/
+  出错/用户取消时退出；Codex CLI 同理；Cline 把 max requests 直接删了）；
+- LangGraph 自己新版默认已是 10007，`create_agent` 用 9999。
+
+所以取 10000（约 3300 个工具回合），当成"真出现死循环时最后兜底"，而不是日常约束。
+**真正的停止手段是用户点停止**（与手动停止走同一条收尾路径）。
+"""
+
+
+def _text_of(message: Any) -> str:
+    """一条消息的正文。
+
+    请求体是混着的：system 是裸 dict（`{"role": "system", "content": ...}`），其余是 LangChain
+    消息对象。形状摘要与轮次日志都得两种都算上，否则 system（AGENTS.md + 技能索引，可能很大）
+    会被静默漏掉——一个少算了 system 的"正文≈N 字符"比没有这个数更误导。
+    """
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str(getattr(message, "content", "") or "")
+
+
+def _looks_like_rejection(error: Exception) -> bool:
+    """是不是"网关拒绝了这个请求"那类错（而不是超时、限流、连接断）。"""
+    text = f"{type(error).__name__}: {error}".lower()
+    return "invalid_request" in text or "badrequest" in text or " 400" in text
+
+
+def _request_shape(messages: list, registry: Any, model: Any, thread_id: str = "-") -> str:
+    """请求形状摘要：**未配对的工具调用**是已知会让 provider 直接 400 的一种（见 messages.py）。
+
+    反过来也有用：`未配对=0` 而网关仍拒，说明形状是合法的——那问题在路由/上游，不在我们这边。
+    """
+    calls = [
+        item["id"]
+        for message in messages
+        if isinstance(message, AIMessage)
+        for item in (message.tool_calls or [])
+    ]
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    dangling = [call_id for call_id in calls if call_id not in answered]
+    roles: dict[str, int] = {}
+    for message in messages:
+        name = type(message).__name__
+        roles[name] = roles.get(name, 0) + 1
+    chars = sum(len(_text_of(message)) for message in messages)
+    return (
+        f"会话={thread_id} 模型={getattr(model, 'model_name', None) or type(model).__name__} "
+        f"条数={len(messages)} 角色={roles} 工具调用={len(calls)} 未配对={len(dangling)} "
+        f"正文≈{chars} 字符 工具={len(registry.names())}"
+    )
+
+
+def log_step_limit(thread_id: str, exc: Exception) -> None:
+    """
+    撞上 superstep 上限时补一条日志。
+
+    这个上限高到正常任务碰不到（见 RECURSION_LIMIT），真撞上基本就是死循环：
+    错误本身照旧原样上抛，日志里说清"多少步、可能是循环"，别让人对着一个数字发愣。
+    """
+    logger.warning(
+        "本轮撞上图的 superstep 上限 thread=%s：%s（上限 %d，"
+        "正常任务碰不到——多半是工具反复失败把模型困在循环里）",
+        thread_id,
+        exc,
+        RECURSION_LIMIT,
+    )
+
+
+def make_compact_node(summary_model: BaseChatModel, settings: Any = None, retry: Any = None):
+    """构造压缩检查节点：超水位就把中段摘要掉；不超（或压不动）就原样放行，返回空更新。
+
+    `settings` 由 `builtin/compaction` 插件的配置提供（不传则引用总体配置）；
+    `retry` 是 `builtin/retry` 服务（可选：没有就直调模型，不重试）。
+    """
+
+    async def compact_context(state: dict) -> dict:
+        config = get_config()
+        thread_id = (config.get("configurable") or {}).get("thread_id") or "-"
+        return await compact_once(
+            state,
+            summary_model=summary_model,
+            thread_id=thread_id,
+            settings=settings,
+            retry=retry,
+            config=config,
+        )
+
+    return compact_context
+
+
+def make_model_node(
+    model: BaseChatModel, registry: Any, context: Any = None, retry: Any = None
+):
+    """
+    构造模型调用节点。节点本身无状态：每轮都把 system prompt 重新拼在历史前面，
+    历史来自 checkpointer。
+
+    **工具集每次调用前从快照重建绑定**（§4.1）——实测 0.1ms、请求体与复用一致（阶段 0 探针 5），
+    所以运行时加/减工具不需要重建图：下一次模型调用就能看到新能力集。
+
+    静态上下文块（项目约定 + 技能索引）来自服务 `context`（可选插件）：没装就不注入。
+    `retry` 同理来自服务（可选）：没装就直调模型——**降级方向是"少一层重试"，不是错误**。
+
+    压缩过的会话发的是"摘要 + 首条用户消息 + 切点起的原文"（只压视图，原文还在检查点里）。
+    `usage_anchor` 记的是这次请求 provider 实报的 input tokens 与"覆盖到第几条**状态里的**
+    消息"——之后追加多少条，下一轮就只粗估那几条。
+    """
+
+    async def call_model(state: dict):
+        messages = state["messages"]
+        compaction = state.get("compaction") or {}
+        config = get_config()
+        # 静态上下文（项目约定 + 技能索引）随工作区变，所以每轮按当前工作区重拼。
+        # 同一工作区内它是稳定的：变了才动前缀缓存，见 prompts.build_system_prompt。
+        workspace = (config.get("configurable") or {}).get("workspace")
+        static = context.static(workspace) if context is not None else ""
+        prompt = build_system_prompt(workspace, static=static)
+        if usable_compaction(compaction, len(messages)):
+            prompt = with_summary(prompt, compaction["summary"])
+            messages = [messages[0], *messages[compaction["from_index"] :]]
+        elif compaction:
+            logger.warning(
+                "压缩锚点越界，本次按全量发送 from_index=%s 共%d条",
+                compaction.get("from_index"),
+                len(messages),
+            )
+
+        model_with_tools = model.bind_tools(list(registry.snapshot()))
+        call = {
+            "config": config,
+            "thread_id": (config.get("configurable") or {}).get("thread_id") or "-",
+            "label": "模型调用",
+        }
+        prompt_messages = [{"role": "system", "content": prompt}, *messages]
+        started = monotonic()  # 含重试与退避：那段时间用户同样在等，算进这一轮
+        try:
+            if retry is not None:
+                response = await retry.ainvoke(model_with_tools, prompt_messages, **call)
+            else:
+                response = await model_with_tools.ainvoke(prompt_messages, config=config)
+        except Exception as error:
+            if _looks_like_rejection(error):
+                # 网关的 400 是笼统拒绝（"invalid request error"），只有形状能说明问题：
+                # 未配对的工具调用、请求多大、带的工具多少。这一行是下次排查的唯一线索。
+                logger.warning(
+                    "模型拒绝了这次请求：%s\n  形状：%s",
+                    error,
+                    _request_shape(prompt_messages, registry, model, call["thread_id"]),
+                )
+            raise
+        meta = getattr(response, "usage_metadata", None) or {}
+        stop = (getattr(response, "response_metadata", None) or {}).get("finish_reason") or "-"
+        # 每次模型调用一行：一轮里的模型往返占大头，这行是"这一轮到底花了多少"的唯一持续来源。
+        # 命中缓存长期贴着 0 = 端点没在复用前缀，每轮都在重预填充整个历史（见 .env.example）。
+        # 完成原因单独看 `length`：输出被上限切断，推理模型可能只吐出思考、正文与工具调用都没有。
+        logger.info(
+            "模型调用 thread=%s 用时=%.2fs 输入=%d（命中缓存 %d）输出=%d 请求=%d 条/≈%d 字符 完成=%s",
+            call["thread_id"],
+            monotonic() - started,
+            meta.get("input_tokens", 0),
+            cache_read_tokens(response),
+            meta.get("output_tokens", 0),
+            len(prompt_messages),
+            sum(len(_text_of(message)) for message in prompt_messages),
+            stop,
+        )
+        if not meta:
+            return {"messages": [response]}
+        return {
+            "messages": [response],
+            "usage_anchor": {
+                "tokens": meta.get("input_tokens", 0),
+                "upto": len(state["messages"]),
+            },
+        }
+
+    return call_model

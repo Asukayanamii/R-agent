@@ -13,8 +13,8 @@
 
 | 来源 | 路径 |
 | --- | --- |
-| 全局库 | `SKILLS_DIR`（默认 `~/.my_agent/skills`） |
-| 项目库 | `<工作区>/.my_agent/skills/` |
+| 全局库 | `SKILLS_DIR`（默认 `~/.r-agent/skills`） |
+| 项目库 | `<工作区>/.r-agent/skills/` |
 
 热路径（每轮拼提示词都要走一遍，一轮里还会走多次）只做 `scandir` + `stat`：文件内容按
 `(mtime_ns, size)` 缓存，只有真的改了才重新读。frontmatter 用 PyYAML 解析——折叠块标量
@@ -26,10 +26,11 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 import yaml
 
-from app.config import CONFIG_DIR, SKILLS_DIR, SKILLS_ENABLED
+from app.common.config import CONFIG_DIR, SKILLS_DIR, SKILLS_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +104,13 @@ _reported_collisions: set[tuple[str, str]] = set()
 
 
 def _read_text(path: Path) -> str:
-    """读文件内容。IO 集中在这里，探针可以替掉它数读取次数。"""
-    return path.read_text(encoding="utf-8")
+    """读文件内容。IO 集中在这里，探针可以替掉它数读取次数。
+
+    `utf-8-sig`：Windows 上的编辑器（记事本、PowerShell 的 `Set-Content -Encoding utf8`）
+    会给 UTF-8 加 BOM，带 BOM 的 `SKILL.md` 首行就不是 `---` → frontmatter 解析失败 →
+    技能"凭空消失"（只留一条告警）。utf-8-sig 对没有 BOM 的文件与 utf-8 完全一样，白拿的容错。
+    """
+    return path.read_text(encoding="utf-8-sig")
 
 
 def _frontmatter(text: str) -> tuple[dict | None, str]:
@@ -269,13 +275,26 @@ def _entries(directory: Path) -> list[os.DirEntry]:
     ]
 
 
-def _roots(workspace: Path | None) -> list[tuple[Path, str]]:
-    """按优先级给出 (技能根, 作用域)。靠前的同名技能获胜。"""
+def _roots(
+    workspace: Path | None,
+    *,
+    global_dir: str | None = None,
+    extra_dirs: Iterable[str] = (),
+) -> list[tuple[Path, str]]:
+    """按优先级给出 (技能根, 作用域)。靠前的同名技能获胜。
+
+    `global_dir=None` 表示引用总体配置（`SKILLS_DIR`）；`extra_dirs` 是插件提供的库
+    （例如 `builtin/skillbook` 随包带的教学技能），作用域标"内置"。
+    """
     roots: list[tuple[Path, str]] = []
     if workspace is not None:
         roots.append((Path(workspace) / CONFIG_DIR / SKILLS_SUBDIR, "项目"))
-    if SKILLS_DIR:
-        roots.append((Path(SKILLS_DIR), "全局"))
+    resolved = SKILLS_DIR if global_dir is None else global_dir
+    if resolved:
+        roots.append((Path(resolved), "全局"))
+    for raw in extra_dirs:
+        if raw:
+            roots.append((Path(raw), "内置"))
     return roots
 
 
@@ -296,19 +315,30 @@ def _log_index(key: str, skills: list[Skill]) -> None:
     logger.info("技能索引（%s）：%s", key, names or "无")
 
 
-def load_skills(workspace: str | Path | None) -> list[Skill]:
+def load_skills(
+    workspace: str | Path | None,
+    *,
+    global_dir: str | None = None,
+    enabled: bool | None = None,
+    extra_dirs: Iterable[str] = (),
+) -> list[Skill]:
     """
     加载该工作区可用的技能，按名字排序（顺序固定，提示词前缀才不会无谓地变）。
 
     同名冲突保留先扫到的那个（工作区优先于全局），并把两边路径都写进日志——
     "为什么改了这个技能没生效"必须能在日志里找到答案。
+
+    `enabled` / `global_dir` 为 None 表示引用总体配置；`extra_dirs` 是插件提供的库
+    （如 `builtin/skillbook` 的教学技能）；图内由 `builtin/context` 插件显式传入。
     """
-    if not SKILLS_ENABLED:
+    if enabled is None:
+        enabled = SKILLS_ENABLED
+    if not enabled:
         return []
 
     root = Path(workspace) if workspace else None
     by_name: dict[str, Skill] = {}
-    for directory, scope in _roots(root):
+    for directory, scope in _roots(root, global_dir=global_dir, extra_dirs=extra_dirs):
         for skill in _scan_root(directory, scope):
             existing = by_name.get(skill.name)
             if existing is not None:
@@ -330,12 +360,17 @@ def load_skills(workspace: str | Path | None) -> list[Skill]:
     return skills
 
 
-def find_skill(workspace: str | Path | None, name: str) -> Skill | None:
-    """按名字找一个技能（含 `manual_only` 的——手动调用正是它存在的意义）。"""
+def find_skill(
+    workspace: str | Path | None, name: str, *, extra_dirs: Iterable[str] = ()
+) -> Skill | None:
+    """按名字找一个技能（含 `manual_only` 的——手动调用正是它存在的意义）。
+
+    `extra_dirs` 同 `load_skills`：插件提供的技能库（如内置教学技能）也要能被 `/skill:<名字>` 找到。
+    """
     wanted = (name or "").strip().lower()
     if not wanted:
         return None
-    for skill in load_skills(workspace):
+    for skill in load_skills(workspace, extra_dirs=extra_dirs):
         if skill.name == wanted:
             return skill
     return None

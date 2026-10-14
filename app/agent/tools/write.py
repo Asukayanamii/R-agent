@@ -4,7 +4,7 @@ from langchain_core.tools import tool
 
 from app.agent.sandbox import WRITE, guard_path
 from app.agent.tools.common import fail, rel
-from app.exceptions import SandboxDenied
+from app.common.exceptions import SandboxDenied
 
 
 @tool

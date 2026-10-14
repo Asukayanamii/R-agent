@@ -1,0 +1,8 @@
+# 开发依赖（第三方）：跑测试用
+#
+#   python -m pip install -r requirements-dev.txt && python -m pytest -q
+#
+# 运行时依赖在 requirements.txt；桌面模式另有 requirements-desktop.txt。
+
+-r requirements.txt
+pytest>=8.0

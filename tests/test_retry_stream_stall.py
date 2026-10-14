@@ -90,7 +90,7 @@ def fake_model(raise_with, *, succeed_on: int = 2, emit_tokens: bool = True):
 
 
 def check_classification() -> None:
-    from app.agent import retry as retry_module
+    from app.plugins.builtin import retry as retry_module
 
     print("=== 1. 「流被掐断」的判定 ===")
     check("停顿看门狗抛的错被认出来", retry_module.stream_was_interrupted(StallError()))
@@ -109,7 +109,7 @@ def check_classification() -> None:
 
 
 def check_retry_behaviour() -> None:
-    from app.agent import retry as retry_module
+    from app.plugins.builtin import retry as retry_module
 
     print()
     print("=== 2. 掐断的流会被重试（原来这里直接失败） ===")
@@ -163,8 +163,8 @@ def check_watchdog_config() -> None:
     os.environ["LLM_BASE_URL"] = "http://127.0.0.1:1/v1"
 
     def load(value: str | None):
-        from app import config as config_module
-        from app.agent import models as models_module
+        from app.common import config as config_module
+        from app.plugins.builtin import model as models_module
 
         if value is None:
             os.environ.pop("LLM_STREAM_CHUNK_TIMEOUT", None)

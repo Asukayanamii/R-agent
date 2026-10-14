@@ -7,7 +7,7 @@ override 顶掉同目录另外两个，其他目录照常层叠（这是 Pi 的�
 
 加载顺序是**外 → 内**，越靠近工作区越靠后：
 
-1. 全局：`~/.my_agent/AGENTS.md`
+1. 全局：`~/.r-agent/AGENTS.md`
 2. 祖先链：从工作区根向上，到**含 `.git` 的目录为止**（收下它再停）
 3. 工作区根
 
@@ -21,7 +21,7 @@ override 顶掉同目录另外两个，其他目录照常层叠（这是 Pi 的�
 import logging
 from pathlib import Path
 
-from app.config import AGENTS_ANCESTORS, CONFIG_DIR, PROJECT_ROOT
+from app.common.config import AGENTS_ANCESTORS, CONFIG_DIR, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -82,15 +82,20 @@ def _content(path: Path) -> str | None:
     return raw
 
 
-def _chain(start: Path) -> list[Path]:
+def _chain(start: Path, *, ancestors: bool | None = None) -> list[Path]:
     """
     从工作区根往上的目录链，**外 → 内**排列。
 
     遇到含 `.git` 的目录就收下它然后停：那是仓库边界，再往上（用户主目录、盘根）
     跟这个项目没关系了。`.git` 可能是目录也可能是文件（worktree / submodule），
     所以用 `exists()` 而不是 `is_dir()`。
+
+    `ancestors=None` 表示引用总体配置（`AGENTS_ANCESTORS`）；图内的调用由
+    `builtin/context` 插件的配置显式传入。
     """
-    if not AGENTS_ANCESTORS:
+    if ancestors is None:
+        ancestors = AGENTS_ANCESTORS
+    if not ancestors:
         return [start]
 
     directories = [start]
@@ -104,18 +109,22 @@ def _chain(start: Path) -> list[Path]:
     return list(reversed(directories))
 
 
-def load_agents_files(workspace: str | Path | None = None) -> list[tuple[Path, str]]:
+def load_agents_files(
+    workspace: str | Path | None = None, *, ancestors: bool | None = None
+) -> list[tuple[Path, str]]:
     """
     按层加载约定文件，返回 [(路径, 正文)]（外 → 内）。
 
     路径用解析后的绝对路径去重：工作区正好在全局目录里、或者祖先链与全局指向同一个文件时，
     同一份约定只该注入一次。
+
+    `ancestors=None` 表示引用总体配置；图内由 `builtin/context` 插件的配置显式传入。
     """
     root = Path(workspace) if workspace else PROJECT_ROOT
     found: list[tuple[Path, str]] = []
     seen: set[Path] = set()
 
-    for directory in (Path.home() / CONFIG_DIR, *_chain(root)):
+    for directory in (Path.home() / CONFIG_DIR, *_chain(root, ancestors=ancestors)):
         if len(found) >= MAX_FILES:
             logger.warning("约定文件超过 %d 份，后面的不再注入：%s", MAX_FILES, directory)
             break

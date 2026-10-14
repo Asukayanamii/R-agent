@@ -10,11 +10,13 @@
 """
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 from app.agent.agents_md import load_agents_files, render_project_context
 from app.agent.skills import load_skills, render_skills_block
-from app.config import AGENTS_MD_ENABLED, PROJECT_ROOT, SKILLS_ENABLED
+from app.common.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +32,85 @@ SYSTEM_PROMPT = (
     "- 按内容搜用 grep，按名字找用 find，看目录用 ls；别拿 bash 里的同名命令代替，"
     "更别把几条拼成一行（多件事的输出会混在一起，也没法分页）\n"
     "- 新建或整体覆盖用 write，改动片段用 edit（精确替换）；别用 echo >/tee/sed -i\n"
+    "- 要读好几处、要改好几处，用批量版 read_many / edit_many 一次做完——"
+    "一次工具调用就是一次完整的模型往返，分几次调就多几倍的等待\n"
     "- bash 留给它真正擅长的：跑测试与构建、git、装依赖、进程与服务，"
     "以及需要管道或多步组合的活儿\n"
+    "- 调工具前后不要复述：别先讲一遍打算做什么、也别在结果回来后再总结一遍，直接往下走\n"
+    "- 改了代码别急着收尾：工作区有测试或构建命令（AGENTS.md 里写了就用它）就先跑相关的，"
+    "把结果一起说\n"
 )
 
 
-def build_system_prompt(workspace: str | None = None) -> str:
+@dataclass(frozen=True)
+class ContextSettings:
+    """静态上下文注入的全部旋钮（由 `builtin/context` 插件的配置提供）。
+
+    默认值 = 改造前行为；`from_app_config()` 引用总体配置（`.env`）——
+    所以"改一处"的习惯（改 .env）照旧，而配置的**所有权**在插件手里。
+    """
+
+    skills_enabled: bool = True
+    skills_dir: str = ''
+    agents_md_enabled: bool = True
+    ancestors: bool = True
+
+    @classmethod
+    def from_mapping(cls, mapping: dict | None) -> 'ContextSettings':
+        """把插件配置（已过 schema 校验）归一化成设置对象。"""
+        options = dict(mapping or {})
+        return cls(
+            skills_enabled=bool(options.get('skills_enabled', True)),
+            skills_dir=str(options.get('skills_dir') or ''),
+            agents_md_enabled=bool(options.get('agents_md_enabled', True)),
+            ancestors=bool(options.get('ancestors', True)),
+        )
+
+    @classmethod
+    def from_app_config(cls) -> 'ContextSettings':
+        """引用总体配置（.env）。"""
+        from app.common import config
+
+        return cls(
+            skills_enabled=config.SKILLS_ENABLED,
+            skills_dir=config.SKILLS_DIR,
+            agents_md_enabled=config.AGENTS_MD_ENABLED,
+            ancestors=config.AGENTS_ANCESTORS,
+        )
+
+
+def render_static_context(
+    workspace: str | None = None,
+    settings: ContextSettings | None = None,
+    extra_skill_dirs: Iterable[str] = (),
+) -> str:
+    """
+    静态上下文块：项目约定（AGENTS.md，外→内）＋ 可用技能索引。
+
+    这一段由服务 `context`（builtin/context 插件）负责注入——插件卸下就不再注入，
+    属于"功能退化"而不是错误。`settings` 不传则引用总体配置；`extra_skill_dirs` 是
+    插件提供的技能库（`builtin/skillbook` 那类），由调用方现取。
+    """
+    settings = settings or ContextSettings.from_app_config()
+    root = Path(workspace) if workspace else PROJECT_ROOT
+    parts: list[str] = []
+
+    if settings.agents_md_enabled:
+        context = render_project_context(load_agents_files(root, ancestors=settings.ancestors))
+        if context:
+            parts.append(context)
+
+    if settings.skills_enabled:
+        block = render_skills_block(
+            load_skills(root, global_dir=settings.skills_dir, extra_dirs=extra_skill_dirs)
+        )
+        if block:
+            parts.append(block)
+
+    return "".join(parts)
+
+
+def build_system_prompt(workspace: str | None = None, *, static: str | None = None) -> str:
     """
     拼出这一轮发给模型的 system 提示词。
 
@@ -43,20 +118,10 @@ def build_system_prompt(workspace: str | None = None) -> str:
     **稳定内容在前、易变内容在后**（压缩摘要由 `with_summary` 追加在最末），所以同一个
     工作区里只有"约定或技能真的变了"才会动前缀，其余时候前缀缓存照常命中。
 
-    workspace 为空表示会话没绑工作区，按应用所在目录处理——与沙箱的兜底值一致。
+    `static` 是静态上下文块：图内由服务 `context` 提供（传进来），图外的调用
+    （如压缩估算）不传，本模块自己渲染。workspace 为空表示会话没绑工作区，
+    按应用所在目录处理——与沙箱的兜底值一致。
     """
     root = Path(workspace) if workspace else PROJECT_ROOT
-    parts = [SYSTEM_PROMPT]
-
-    if AGENTS_MD_ENABLED:
-        context = render_project_context(load_agents_files(root))
-        if context:
-            parts.append(context)
-
-    if SKILLS_ENABLED:
-        block = render_skills_block(load_skills(root))
-        if block:
-            parts.append(block)
-
-    parts.append(f"\n\n当前工作区：{root.as_posix()}")
-    return "".join(parts)
+    block = render_static_context(workspace) if static is None else static
+    return "".join([SYSTEM_PROMPT, block, f"\n\n当前工作区：{root.as_posix()}"])

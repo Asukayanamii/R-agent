@@ -15,6 +15,7 @@
 
 import json
 import re
+from dataclasses import dataclass
 from time import monotonic
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -37,6 +38,56 @@ MIN_MIDDLE = 2
 
 TAG = "compact"
 """摘要调用的标签：事件翻译层靠它把这次调用的文本流挡在前端之外。"""
+
+
+@dataclass(frozen=True)
+class CompactionSettings:
+    """压缩的全部旋钮（由 `builtin/compaction` 插件的配置提供）。
+
+    配置从哪来（.env / 将来前端写的设置）与算法无关：装配时把插件 config 归一化成它
+    （`from_mapping`），实现只认这个对象。默认值 = 改造前行为。
+    """
+
+    enabled: bool = True
+    trigger_ratio: float = 0.8
+    keep_tokens: int = 20_000
+    context_window: int = 64_000
+
+    @property
+    def trigger_tokens(self) -> int:
+        """触发线 = 窗口 × 该比例。"""
+        return int(self.context_window * self.trigger_ratio)
+
+    @property
+    def max_summary_tokens(self) -> int:
+        return summary_max_tokens(self.context_window)
+
+    @property
+    def input_chars(self) -> int:
+        return summary_input_chars(self.context_window)
+
+    @classmethod
+    def from_mapping(cls, mapping: dict | None) -> 'CompactionSettings':
+        """把插件配置（已过 schema 校验）归一化成设置对象。"""
+        options = dict(mapping or {})
+        return cls(
+            enabled=bool(options.get('enabled', True)),
+            trigger_ratio=float(options.get('trigger_ratio', 0.8)),
+            keep_tokens=int(options.get('keep_tokens', 20_000)),
+            context_window=int(options.get('context_window', 64_000)),
+        )
+
+    @classmethod
+    def from_app_config(cls) -> 'CompactionSettings':
+        """引用总体配置（.env）——默认值的来源，保持"改一处"的习惯。"""
+        from app.common import config
+
+        return cls(
+            enabled=config.COMPACT_ENABLED,
+            trigger_ratio=config.COMPACT_AT,
+            keep_tokens=config.COMPACT_KEEP_TOKENS,
+            context_window=config.LLM_CONTEXT_WINDOW,
+        )
 
 
 def rough_tokens(text: str) -> int:

@@ -14,30 +14,88 @@
 | 装了什么 | FastAPI + SSE + 调试前端 + 桌面模式，一套配齐 | 保留图的编排与事件协议，应用形态交给插件 |
 | 往哪走 | 好用 | 通用、可插拔 |
 
-**代码目前与上游一致**：能跑的东西、行为、约定全都相同——内核化是**接下来要做的事**，
-不是已经做完的成果；「路线图」里的三件事，代码里一行都还没有。
+**内核提取已落地一部分**（阶段 A–E / J / K / F / L）：插件内核内联在 `app/kernel/`，装配层
+（`app/harness/`：片段契约、合成器、版本、资产路由、节点壳）与十五个内置插件（`loop` / `protocol` /
+`toolbox` / `atomic_tools` / `model` / `retry` / `store` / `sandbox` / `compaction` / `approvals` /
+`context` / `exporters` / `graph_tools` / `skillbook` / `webui`）都已就位，`container.py` 也从手工装配换成了内核
+Context；插件发现与信任、热重载、按会话工作区分区、agent 自改图、内置技能库都做了。
+**还没做**：路线图的另外两件事（System-1 路由、自改进）。
 
-## 目标形态
+## 目标形态：LangGraph 的执行图 × Cordis 的装配图
 
 内核 = **LangGraph 图工作流** × **插件思想（参考 [Cordis](https://github.com/cordiverse/cordis)）**。
+设计已部分落地（阶段 A–E + J/K/F/L/N）：装配层与十五个内置插件在代码里，两级插件库的发现、信任、
+热重载、按会话工作区分区、agent 自改图、内置技能库都在（见"插件库"一节）；**路线图的另外两件事**
+（System-1 路由、自改进）还没开始。
 
-- **图工作流**是骨架：`compact → agent ⇄ tools`，节点少、边明确，每轮都从压缩检查开始
-  （见 `docs/graph.mmd`，由 `app/agent/graph.py` 生成）。这一层不动。
+- **图工作流**是骨架：`stamp → [entry] → compact → [pre_model] → agent → [post_model]`，
+  条件边在 `post_model` 之后分流——有工具走 `tools → [post_tools] → compact`，没有走 `[finish] → END`。
+  方括号是**透传锚点**：空着就是空操作节点，挂上片段就把它的出边改接到链尾（见 `docs/graph.mmd`，
+  由合成器导出：`python -m app.harness`）。
 - **插件思想**是长法：照 Cordis 那套取舍——**一切皆插件、依赖靠声明、有明确生命周期、可热插拔**。
-  这边对应的是工具、技能、审批策略、压缩策略、存储、事件出口；它们现在都硬编码在
-  `app/container.py` 这个装配根里，插件化之后应当能各自装上卸下，而不是改框架代码。
+  这边对应的是工具、技能、审批策略、压缩策略、存储、事件出口；目前 `loop`（骨架）、`protocol`
+  （事件形状与 SSE 编码）、`webui`（前端资产）已经是同级插件，其余还硬编码在 `app/container.py`
+  这个装配根里，插件化之后应当能各自装上卸下，而不是改框架代码。
 
-> 名字沿用上游：conda 环境 `my_agent`、`~/.my_agent/`、日志前缀 `[my-agent]`。改不改、什么时候改
-> 单独定——混进功能改动里做，diff 就没法看了。
+### 两块拼图各缺一半
+
+| | 有 | 缺 |
+| --- | --- | --- |
+| **LangGraph** | **执行图**：类型化状态通道、检查点、`interrupt` / `resume`、superstep——回答"现在走到哪、停在哪、怎么接着跑" | **装配**：图在编译期构建，官方没有运行时改图的 API。能力边界写死在编译出来的图里，加一个节点、换一套审批策略都要改框架代码 |
+| **Cordis** | **装配图**：服务按名字共享、`inject` 声明依赖、**一切注册皆可逆**（装上生效、卸下按逆序撤销）——回答"能力从哪来、依赖谁、怎么撤销" | **执行进度**：内核没有状态通道、没有检查点、没有"暂停后从别处恢复"。它的审批是**否决**（策略插件不调用 `next()` 直接返回），不是**挂起** |
+
+两边的"时间维度"不是一回事，这是最容易混的地方：**Cordis 的时间性 = 副作用可逆（装配期），
+LangGraph 的时间性 = 执行进度可持久化（运行期）**。
+
+### 痛点：「改」和「退」必须同时成立
+
+要的是 agent 在运行中改自己的能力边界，而且改坏了能退回去。五个环节各自落在两边的强项上：
+
+| 环节 | 谁管 | 靠什么 |
+| --- | --- | --- |
+| 运行中加一个能力（节点 / 工具 / 策略） | Cordis | 装载插件，依赖就绪才激活（`inject`），注册即 effect |
+| 卸下即撤销、不留残留 | Cordis | effect 逆序释放 |
+| **正在跑的那一轮**怎么办 | LangGraph | 回合边界切换 + 版本钉住：进行中的回合跑完旧版本，新回合用新结构 |
+| 停在待确认上、重启后还能点确认 | LangGraph | 检查点 + `interrupt` / `Command(resume=...)` |
+| 改完结构，旧会话还能接着聊 | **已放弃** | 不做兼容承诺：结构变更后旧会话可弃、需要就新开。展平合成下实测能继续跑（阶段 0 探针 3），但那不再是需求，也不为此设约束 |
+
+一句话：**LangGraph 管执行图（状态怎么流、走到哪、停在谁身上），Cordis 管装配图（能力从哪来、
+依赖谁、怎么撤销）；两者之间的接缝是"结构声明"（数据），不是互相调用。**
+
+### 一条纪律（免得以后跑偏）
+
+**状态的所有者只能有一个**：状态在图里、能力在插件里；接缝只能是数据——状态通道、端口、声明。
+不允许插件去操纵图的版本，也不允许图去 dispose 插件的 fiber。跨过这条线就是两套生命周期打架，
+而表现是"改坏了不报错、只是静默失效"——这是本项目里最贵的一类 bug。
+
+> **为什么不是只用 Cordis**（把 agent loop 也做成插件）？做得到——DSH 生态里已经有可视化工作流
+> 编排插件（拖拽画布、断点续跑、运行中改画布）。代价是执行图那半要自己实现、自己保证：状态合并
+> 语义、持久化、暂停/恢复、确定性并行。这四件恰好是最不该自己写对的部分；而且审批、沙箱授权、
+> 压缩锚点、历史恢复现在已经全在检查点里，重写等于把它们一起推倒。
+
+> 名字说明：上游项目叫 `my_agent`；本仓库的名字是 `r-agent`——conda 环境 `r-agent`、
+> `~/.r-agent/`、日志前缀 `[r-agent]`。
 
 ## 路线图
 
-方向先写清楚，**三件都还没实现**。
+方向先写清楚。**第 1 件进行中**（阶段 A–E/J/K/F/L/N：内核、装配层、十五个内置插件、插件发现与信任、自改图、内置技能已落地），另外两件还没开始。
 
 ### 1. 插件化内核
 
 把「能力」和「装配」拆开：工具、技能、审批、压缩、存储各自成为一个插件，依赖靠声明而不是 import
 具体实现，生命周期跟着容器走（装上即生效、卸下即清理）。现在换一个实现要动装配根，之后只是换一个插件。
+
+**进度（阶段 A–E / J / K / F / L）**：内核内联（`app/kernel/`，不依赖 `app.*`）；片段契约与合成器
+（`app/harness/`：锚点插链、动态 schema、两段校验、版本与租约、节点壳与熔断、合成报告）；
+十五个内置插件（骨架 `loop`、协议 `protocol`、工具箱 `toolbox`、批量工具 `atomic_tools`、模型 `model`、重试 `retry`、
+存储 `store`、沙箱策略 `sandbox`、压缩 `compaction`、审批 `approvals`、上下文 `context`、
+观测 `exporters`、自改图 `graph_tools`、内置技能 `skillbook`、前端 `webui`）；工具集可在**运行时**
+增删（下一次模型调用生效、不需要重建图）；`/ui` 改成表驱动的动态资产路由；容器换成
+Context 装配（必需插件缺了启动即失败）；两级插件库的发现、按文件批准与热重载
+（`app/plugins/discover.py`：`.json` 纯声明片段 / `.py` 可编程插件，内容指纹轮询，回合边界换图）；
+目录按层重排过（顶层从 13 个平铺包收成"内核侧四层 + `web/` + `common/` + 三个入口文件"，
+依赖方向由 `tests/test_layout.py` 守着）。
+**未做**：`model` / `retry` / `store` / `sandbox` 四个内置插件、图版本审计表、agent 自改图的工具。
 
 ### 2. 节点路由：Jev 类 System One 决策模型
 
@@ -72,17 +130,18 @@
 
 ## 环境要求
 
-- Python 3.13（conda 环境名 `my_agent`）
+- Python 3.13（conda 环境名 `r-agent`）
 - Windows / Linux / macOS 均可
 
 ## 依赖安装
 
 ```bash
 conda env create -f environment.yml
-conda activate my_agent
+conda activate r-agent
 ```
 
-已有环境或使用 venv：`pip install -r requirements.txt`。
+已有环境或使用 venv：`pip install -r requirements.txt`
+（旧环境名 `my_agent` 可以直接继续用——代码不依赖环境名；要改名用 `conda rename -n my_agent r-agent`）。
 桌面模式额外需要 `pip install -r requirements-desktop.txt`。
 
 ## 配置
@@ -107,9 +166,75 @@ cp .env.example .env
 | `COMPACT_KEEP_TOKENS` | `20000` | 压缩时保留的最近原文预算（tokens），更早的中段摘要掉 |
 | `COMPACT_MODEL` | 空 | 摘要用哪个模型；留空跟随 `LLM_MODEL`。填个小模型更快更便宜 |
 | `SKILLS_ENABLED` | `1` | `0` 关掉技能发现与沙箱的受信只读根 |
-| `SKILLS_DIR` | `~/.my_agent/skills` | 全局技能库；同时是沙箱的**受信只读根**（只读放行） |
+| `SKILLS_DIR` | `~/.r-agent/skills` | 全局技能库；同时是沙箱的**受信只读根**（只读放行） |
 | `AGENTS_MD_ENABLED` | `1` | `0` 关掉 `AGENTS.md` / `CLAUDE.md` 注入 |
 | `AGENTS_ANCESTORS` | `1` | `0` 只读全局与工作区根，不向上遍历祖先目录 |
+| `PLUGINS_ENABLED` | `1` | 插件发现总开关；`0` 只装配内置插件（两级插件库都不扫） |
+| `PLUGINS_DIR` | `~/.r-agent/plugins` | 全局插件库：`.py`（可编程）/ `.json`（纯片段声明），**装载即信任** |
+| `PLUGINS_WORKSPACE` | `0` | 工作区插件库开关：`1` = 每个会话按**自己的工作区**各扫一份（作用域隔离：A 批准的插件不影响 B 的会话），每个文件要在 `<该工作区>/.r-agent/plugins.json` 的 `trusted` 里才装载 |
+| `PLUGIN_WATCH` | `1` | 内容指纹轮询热重载；`0` 只在启动时扫一次 |
+| `PLUGIN_AUTHOR_INSTALL` | `0` | 允许 agent 用 `install_plugin` 写 `.py`（**等于执行任意代码**，仍要过确认卡）；`add_fragment` 不受它影响 |
+| `GRAPH_VERSIONS_KEEP` | `4` | 图版本账本保留几个历史版本（LRU，进行中的回合不回收） |
+
+**配置项由插件自己维护**（设计稿 §5.6）：压缩、上下文注入这些旋钮的**声明与默认值**在各自插件里
+（`Config` schema + `default_config()`），上面这些环境变量是它们的**默认值来源**——所以改 `.env`
+仍然"改一处"。装配时插件配置 = 默认值 + 用户覆盖 dict 的合并（覆盖层留给将来的设置界面）；
+纯插件配置项（例如 `builtin/approvals` 的 `required`）不进根配置，就地在该插件的说明里。
+加新插件时，它的可配置项由它自己做插件时声明，不动 `app/common/config`。
+
+## 插件库（发现、信任、热重载）
+
+图的结构不再写死在代码里：**内置插件给骨架，插件库给片段**。两级来源：
+
+| 来源 | 位置 | 信任 |
+| --- | --- | --- |
+| 全局库 | `PLUGINS_DIR`（默认 `~/.r-agent/plugins`） | **装载即信任**（是你自己的目录） |
+| 工作区库 | `<会话的工作区>/.r-agent/plugins/`（`PLUGINS_WORKSPACE=1` 才扫） | **按工作区各自一份清单**；每个文件要出现在 `<该工作区>/.r-agent/plugins.json` 的 `trusted` 里才装载 |
+
+两种形态，都是**一个文件一个插件**（`_` 开头的是作者辅助文件，不当插件）：
+
+- **`.json`（纯声明片段）**：只描述"往哪个锚点挂一条链"，节点必须声明 `interface`（实现由服务给，
+  数据不执行代码）。形状：
+
+  ```json
+  {"id": "workspace/research", "anchor": "pre_model",
+   "chain": [{"name": "notes", "interface": "research", "reads": ["messages"]}]}
+  ```
+
+- **`.py`（可编程插件）**：`plugin = {"apply": apply, "name": "..."}`，在 `apply(ctx)` 里
+  `ctx.provide(...)` / `ctx.structure.contribute(...)`。**装载即执行代码**，所以工作区那份必须先批准；
+  源码直读编译（不走 import 缓存），改完就能热重载。
+
+行为要点：
+
+- **写文件 ≠ 生效**：agent 能往库里写片段（阶段 F 的自改图就是这么做的），但没进授权清单就不会被装载
+  ——写与信任是两件事；批准清单本身在沙箱里是硬阻断区（读写都拒、永不提示）。
+- **改文件不改运行图**：增/删/改只改"结构来源"，图在**下一个回合边界**才换；在飞回合照旧跑旧版本。
+  合成失败保留旧版本并记警告——结构出错的插件不该带走正在跑的会话。
+- **热重载**：`PLUGIN_WATCH=1`（默认）按**内容指纹**轮询（1 秒一次）；改内容、删文件都看得见，
+  只 touch 不改内容不会白重载；置 `0` 只在启动时扫一次。
+- **坏文件只点名**：JSON 语法错、接口没有实现的片段**挡在装载口**并在日志里按文件名报出来
+  （`INTERFACE_MISSING`），其余插件照常装载。
+- **作用域 = 会话工作区**（`PLUGINS_WORKSPACE=1` 时）：每个会话按自己的工作区各扫一份，A 批准的插件
+  不进 B 的图，各自一套片段、版本与信任清单；没有插件（或没批准）的工作区共用全局那张图。
+  作用域同时在册 8 个（LRU，`runtime.MAX_SCOPES`），最久没用过的会被回收。
+- **审计**：每次图版本切换落一行 `graph_version`（作用域、结构哈希、参与片段、挂载链、片段清单、
+  mermaid 存档、`reason` = 启动 / 结构变化 / 熔断）。**写库失败只记 WARNING**——审计是旁路，不许带走装配。
+
+### agent 自改图（`builtin/graph_tools`）
+
+模型可以**自己改图**——写声明、装插件，人只点一次审批：
+
+| 工具 | 做什么 |
+| --- | --- |
+| `add_fragment` | 把一条 `.json` 片段声明写进当前工作区插件库 → 弹确认卡 → 批准后进信任清单 |
+| `install_plugin` | 写 `.py`（等于执行代码）：要装配时显式放行（`allow_install_plugin=1`），默认**关** |
+| `inspect_graph` | 读当前合成报告 + 运行中版本的片段清单 + 最近几次审计（只读） |
+
+三道闸门，缺一不可：**写之前**先验（JSON 形状 / 锚点在骨架锚点表里 / interface 有实现）——
+不让人批准一个注定装不上的文件；**批准**复用现成的 `interrupt` 确认卡（前端不用改）；
+**生效**在下一个回合边界（本轮仍跑旧图）。怎么退：删掉那个文件，或把名字从
+`<工作区>/.r-agent/plugins.json` 的 `trusted` 里去掉。怎么回放：审计表给"改前/改后 + 为什么"。
 
 ## 启动
 
@@ -126,6 +251,7 @@ python -m uvicorn app.main:app --reload --port 8000
 | --- | --- | --- |
 | POST | `/chat/stream` | 发起一轮对话，SSE 流 |
 | POST | `/chat/resume` | 带着用户选择，从 `interrupt` 处继续，SSE 流 |
+| POST | `/chat/abandon` | **放弃当前的待确认**，让卡住的会话重新能发消息（见下） |
 | POST | `/chat/skill` | 调用一个技能（等价 `/skill:<名字>`），SSE 流；技能名不存在时流里回一条 `error` |
 | POST | `/chat/compact` | 主动压缩一次上下文（等价 `/compact`）；跳过阈值与冷却，消息不删 |
 | GET | `/chat/history` | 读取既有会话消息，供前端恢复 |
@@ -137,8 +263,8 @@ python -m uvicorn app.main:app --reload --port 8000
 
 非流式接口走 `Result` 包装（`{code, message, data}`，`code=0` 为成功）。
 
-**异常有两个出口，各自兜住全部异常**：流式在 `app/event/stream.py` 补一帧 `error` + `done`，
-非流式由 `app/handler/` 的全局处理器包成 500 + `Result`。两边都返回异常原文（堆栈只进服务端日志），
+**异常有两个出口，各自兜住全部异常**：流式在 `builtin/protocol` 的编码层补一帧 `error` + `done`，
+非流式由 `app/web/handler/` 的全局处理器包成 500 + `Result`。两边都返回异常原文（堆栈只进服务端日志），
 所以上游（模型服务、数据库）出错既不会带走进程，前端也总能拿到明确的结束标记。
 
 **停止一轮 = 断开这条流。** 点停止（或按 `Esc`）会中止当前请求，服务端在取消里做收尾：
@@ -161,6 +287,17 @@ python -m uvicorn app.main:app --reload --port 8000
 {"thread_id": "demo", "value": "拒绝"}
 ```
 
+**`/chat/abandon`：从"卡住的会话"里脱身。** 任何一轮以错误收场（模型网关 400、断网）都可能把
+会话留成"卡着"的样子：要么 interrupt 还挂着、要么留下没人回应的 `tool_calls`。这时前端会把
+之后每条消息都判成"待确认未处理"而只排队（`threadPending`）——看起来整条会话死了，而报错里
+那句"请放弃这次待确认"原本没有对应的动作。
+
+`POST /chat/abandon {"thread_id": "..."}` 把这两种卡法都收拾掉（补回执消化 interrupt / 补"已中断"
+回执修悬空调用），并**重算索引里的 `pending` 标记**——只清图状态不刷索引的话，界面照样排队
+（真跑里就是这么漏过一次的）。返回 `{"abandoned": N}`，0 表示本来就不卡。
+前端在确认卡片上给了「放弃这次待确认」按钮，并在"队列有货却发不出去"时自动把这张卡片
+叫回屏幕上。
+
 ### 事件协议
 
 两个流式接口响应均为 `text/event-stream`，每帧 `data` 形如 `{"type": ..., "data": {...}}`：
@@ -175,9 +312,12 @@ python -m uvicorn app.main:app --reload --port 8000
 | `message_end` | 本条消息结束，携带 `message_id` 与 `usage` |
 | `error` | 出错，`code` 与 `Result` 语义一致 |
 | `done` | 流结束，必为最后一帧 |
+| `graph_updated` | 结构相对该会话上次运行变了：带新版本号、结构哈希与 mermaid 源码（前端可折叠卡片） |
+| `toolset_updated` | 能力集（工具）变了：下一次模型调用就会带上（前端提示新清单） |
+| `plugin_failed` | 插件节点失败**已收口**：这一步跳过、会话继续；连续失败到阈值整条片段自动停用 |
 
 前端只需 `switch (type)`，**未知 type 静默忽略**，后端新增事件不会影响已上线前端。
-`error` 与 `done` 由 `app/event/stream.py` 统一收口，实现类无需产出。
+`error` 与 `done` 由 `builtin/protocol` 的编码层统一收口，实现类无需产出。
 
 两个前端实现时要知道的约定：**多调用时中断逐个出现**，每次 `resume` 解决一个、
 响应里会带出下一个 `interrupt`；**同一节点的多个 interrupt 复用同一个 id**，
@@ -186,7 +326,7 @@ python -m uvicorn app.main:app --reload --port 8000
 
 ## 工具
 
-八个，参考 Pi（earendil-works/pi）的设计，一个工具一个文件：
+内置八个，参考 Pi（earendil-works/pi）的设计，一个工具一个文件；`builtin/atomic_tools` 插件再补两个**批量版**：
 
 | 工具 | 作用 | 要点 |
 | --- | --- | --- |
@@ -195,9 +335,19 @@ python -m uvicorn app.main:app --reload --port 8000
 | `edit` | 精确替换片段 | 默认要求 `old_string` 唯一；找不到时退化为忽略行尾空白匹配；保留原文件换行风格；另外返回结构化差异（见下） |
 | `ls` | 列目录 | 目录在前，带大小与修改时间 |
 | `find` | 按 glob 找文件 | `*` 跨目录，结果排序 |
-| `grep` | 按正则搜内容 | 支持 glob 过滤与忽略大小写；跳过噪音目录与二进制文件 |
+| `grep` | 按正则搜内容 | 支持 glob 过滤、忽略大小写；`before`/`after` 给上下文行（`:` 命中、`-` 上下文）；跳过噪音目录与二进制文件 |
 | `bash` | 执行命令 | 流式读取、内存有上限、超时杀进程树、Windows 优先用 Git Bash |
 | `get_current_time` | 取当前时间 | 八种格式（`iso` 默认 / `timestamp` / `date` / `time` / `human` / `cn` / `rfc` / `full`），支持 IANA 命名时区 |
+| `edit_many`（插件） | **一次改多处**（可跨文件） | 失败即停，并说清"第几条、为什么、前面几条已应用"；单文件时照样给界面画差异 |
+| `read_many`（插件） | **一次读多段** | 单个失败不影响其它（读是幂等的），每段仍带行号与续读位置 |
+
+**为什么要有批量版**：工具调用是**一次一轮模型往返**——一处一改的接口，模型就会一处一返回。
+真跑记录（改一份 2400 行的前端单文件，无批量工具）：65 次工具调用 ≈ 65 次模型往返，
+31.6 分钟里 91% 的时间花在往返之间（`edit` 16 次、`read` 34 次，大半是"改一处再看一眼"）。
+批量版把这类工作压成个位数调用。工具描述里也写明了"改多处用 `edit_many`，别一处一次"。
+
+插件注册同名工具是**顶替**（可以拿来"升级"内置工具），并且**可回退**：卸载插件时
+`Toolbox.register` 会把被顶替的那个还原回去（"注册即 effect"＝回到注册前，不是删掉这个名字）。
 
 **所有工具的输出都有上限**（50KB / 2000 行）。`read` 保留开头并提示续读位置；
 `bash` / `grep` / `find` / `ls` 保留尾部或计数。截断时会**明确告知丢了多少**——
@@ -278,7 +428,7 @@ python -m uvicorn app.main:app --reload --port 8000
 - **已经吐出字的调用不重试**：前端没法把已经渲染的半截回答撤回去，重试只会把它再拉一遍，
   看起来像答了两遍。宁可原样报错（要支持得先有"重置本轮文本"的事件）。
 - **SDK 自带的重试关掉了**（`max_retries=0`）：它不记日志、延迟不可控，次数还会和我们这层
-  相乘（3 × 2 次）。重试只有一处，全在 `app/agent/retry.py`。
+  相乘（3 × 2 次）。重试只有一处，全在 `builtin/retry` 插件（服务 `retry.ainvoke`）。
 - 重试耗尽后抛出去的是**最后一次的异常原文**，两个异常出口不变；每次重试都会先写一行
   WARNING（第几次、等多久、原文），所以日志里能看出"这次慢是因为在重试"。
 
@@ -306,8 +456,9 @@ description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时
 
 | 来源 | 路径 | 作用域 |
 | --- | --- | --- |
-| 项目 | `<工作区>/.my_agent/skills/` | 当前工作区 |
-| 全局 | `SKILLS_DIR`（默认 `~/.my_agent/skills`） | 所有工作区 |
+| 项目 | `<工作区>/.r-agent/skills/` | 当前工作区 |
+| 全局 | `SKILLS_DIR`（默认 `~/.r-agent/skills`） | 所有工作区 |
+| 内置 | `builtin/skillbook` 随包带的库 | 所有工作区（作用域标"内置"） |
 
 - **进提示词的只有名字、描述、路径**，正文由模型用 `read` 按需读取（渐进披露）。技能里引用的
   相对路径以 `SKILL.md` 所在目录为基准。
@@ -317,6 +468,8 @@ description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时
 - `disable-model-invocation: true` 的技能不进提示词索引，只能 `/skill:<名字>` 手动调用。
 - 加完技能**下一条消息就生效**（按 `mtime` 感知，不用重启）；每轮只 stat，内容没变不重读。
 - **agent 也能建技能**：工作区里的技能目录在沙箱内、可读可写，可以直接让它写一个。
+- **内置库**：`builtin/skillbook` 随包带了一份教学技能 `r-agent-plugins`（插件原理 / 写插件 /
+  启用插件），装载时把库目录加进沙箱受信只读根（读正文不弹授权），卸下即收回。
 - 斜杠命令：`/skills` 列清单，`/skill:<名字> [参数]` 强制调用（把 `SKILL.md` 正文作为这一轮
   的指令发出去，参数以 `User: <参数>` 附在末尾）。它**会进历史**——与 `/compact` 那类
   "命令不是消息"的约定不同；界面上仍只显示这条命令本身，不显示整份正文。
@@ -326,7 +479,7 @@ description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时
 同一个目录里取**一个**文件：`AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md`
 （override 顶掉同目录另外两个，其他目录照常层叠）。加载顺序是**外 → 内**：
 
-1. 全局：`~/.my_agent/AGENTS.md`
+1. 全局：`~/.r-agent/AGENTS.md`
 2. 祖先链：从工作区向上，**到含 `.git` 的目录为止**（仓库边界之外跟这个项目没关系）
 3. 工作区根
 
@@ -380,8 +533,8 @@ description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时
 | --- | --- | --- |
 | 拒绝 | 不存 | — |
 | 允许（本次运行有效） | 内存 | 本工作区，进程重启即失效 |
-| 记住（仅此工作区） | `<工作区>/.my_agent/sandbox.json` | 本工作区，持久 |
-| 记住（所有工作区） | `~/.my_agent/sandbox.json` | 所有工作区，持久 |
+| 记住（仅此工作区） | `<工作区>/.r-agent/sandbox.json` | 本工作区，持久 |
+| 记住（所有工作区） | `~/.r-agent/sandbox.json` | 所有工作区，持久 |
 
 授权粒度是**被问到的那一个路径本身**：同意一个文件不等于同意整个目录。
 
@@ -390,8 +543,10 @@ description: 抽取 PDF 文本与表格、填表、合并。处理 PDF 文档时
 
 ## 人工确认
 
-`app/agent/tools/__init__.py` 里 `APPROVAL_REQUIRED` 内的工具，执行前逐个征求确认。
-**它目前是空的**——编码场景下每条命令都点确认会很烦。把 `"bash"` 加进去即可启用。
+需要确认的工具名单现在是**审批插件的配置**（`builtin/approvals`，服务 `approvals`）：
+装配时传 `{"required": [...]}`，例如 `{"required": ["bash"]}`。
+**默认名单是空的**——编码场景下每条命令都点确认会很烦。
+名单是**收紧类**能力：每次执行现取，改了即时生效（不用等回合边界）。
 
 ```
 agent → tools（审批 + 执行） → agent
@@ -428,7 +583,7 @@ agent → tools（审批 + 执行） → agent
 
 ## 调试页面
 
-`app/static/index.html`，布局参考 Open WebUI：左侧会话列表**先按工作区、再按今天/昨天/更早**
+`app/plugins/builtin/webui/static/index.html`，布局参考 Open WebUI：左侧会话列表**先按工作区、再按今天/昨天/更早**
 两层分组（组头可折叠，悬停露出「在此工作区新建」）、助手消息带头像无气泡、
 用户消息右侧气泡（24px 圆角，与 Open WebUI 的 `rounded-3xl` 一致）、
 底部圆角输入框。支持流式渲染、markdown、工具卡片折叠、人工确认卡片、工作区切换
@@ -440,8 +595,14 @@ agent → tools（审批 + 执行） → agent
 
 主题令牌集中在 CSS 顶部的 `:root[data-theme=...]`，换皮只改那一层。
 
-> 浏览器端与桌面端是**同一个文件**。`app/main.py` 把 `app/static` 挂在 `/ui`，
-> `app/desktop.py` 的窗口也加载同一个地址，改一处两边同时生效。
+> 浏览器端与桌面端是**同一个文件**。`builtin/webui` 插件把它的 static 目录挂到 `/ui`
+> （表驱动的一条动态路由，装卸只改表），`app/desktop.py` 的窗口也加载同一个地址。
+> **换个前端 = 换一份 webui 插件目录**；卸下这个插件，`/ui` 立即 404 而 `/chat/*` 照常。
+>
+> 资产路由认**任意已装载的 alias**（`/<alias>/…`，默认目录里找 `index.html`）：所以
+> **一个内核进程能同时服务多套前端**——工作区插件可以挂自己的工作台（例如 `/panel/…`），
+> 与内置的 `/ui` 并存、互不影响；删掉插件文件即 404（资产类是装载即生效，不用等回合边界）。
+> 代价与边界：资产是**进程级**的（不按工作区分域），别名别去抢 `/ui` 和 `/chat/*`。
 
 ## 桌面模式
 
@@ -453,6 +614,76 @@ python run_desktop.py
 根目录的 `run_desktop.py` 就是为此存在的。
 
 窗口端口由系统分配，不会和已在跑的 8000 冲突；窗口关闭时后端一并退出。
+
+工具"没做成"失败由 `app/agent/tool_calls.py` 收成 `status=error` 的回执（连异常也是）；工具输出在出口过一遍**密钥遮蔽**（按环境变量名认：`*_KEY` / `*_TOKEN` / `*_SECRET` / …）——否则模型一句 `env | grep` 就能把 `LLM_API_KEY` 打进对话、进而发给模型服务。
+
+## 打包（PyInstaller）
+
+```bash
+pip install pyinstaller
+pyinstaller --clean --noconfirm packaging/r-agent.spec
+```
+
+产出 `dist/r-agent/`（onedir；Windows 上是 `r-agent.exe`）：
+
+```bash
+dist/r-agent/r-agent.exe            # 桌面窗口（需要 pywebview：pip install -r requirements-desktop.txt）
+dist/r-agent/r-agent.exe --serve    # 只跑后端；日志给出 http://127.0.0.1:<端口>/ui/
+dist/r-agent/r-agent.exe --serve --port 8123
+```
+
+spec 里显式带上两类**包内数据**（PyInstaller 只自动收 `.py`）：内置前端的静态资产、
+内置技能库。漏了它们的表现恰好是"前端 404 / 技能索引为空"。
+
+### 打包后：库在哪、配置在哪
+
+安装目录只放程序，**可写的东西全在用户目录**：
+
+| 东西 | 默认位置 | 用哪个配置项改 |
+| --- | --- | --- |
+| 全局插件库 | `~/.r-agent/plugins` | `PLUGINS_DIR` |
+| 全局技能库 | `~/.r-agent/skills` | `SKILLS_DIR` |
+| 会话/审计库 | `~/.r-agent/data/checkpoints.db` | `SQLITE_PATH` |
+| 用户配置 | `~/.r-agent/.env` | 首次启动自动生成（**每行都注释掉**的模板：要改哪项就取消注释） |
+| 部署配置 | 可执行文件旁边的 `.env` | 便携部署：库位置、插件开关放这里 |
+
+优先级：**真环境变量 > 用户配置 > 安装目录旁的 `.env` > 代码默认值**。
+
+启动日志第二行把五处位置全部打出来——"我的库到底在哪"不用猜：
+
+```
+库位置：应用目录 <安装目录>；用户配置 ~/.r-agent/.env；全局插件库 …；全局技能库 …；会话库 …
+```
+
+源码运行时默认值不变（`./data`、`~/.r-agent/plugins`），**打包形态才把默认落点换到用户目录**
+（安装目录不该被写）。
+
+## 插件管理
+
+**给模型的**：`inspect_graph` 工具的 `plugins` 字段 = 内置 + 全局库 + 当前工作区库的清单，
+每行 `name / source / file / state / reason`。它补的是"图里看不见的那批"——只加工具、只挂资产的
+插件不贡献片段，在合成报告里没有它们。`install_plugin` / `add_fragment` 的返回里也附一句
+"当前插件 N 个（生效 M）"，写完就知道自己在整体里什么位置。
+
+**给用户的**（后端已就绪，前端面板待做）：
+
+| 接口 | 作用 |
+| --- | --- |
+| `GET /plugins?workspace=<路径>` | 清单：来源（内置/全局/工作区）、状态（ACTIVE / 待批准 / 已停用 / FAILED / PENDING）、原因；外加两级库目录 |
+| `POST /plugins/enable` | 启用 / 停用（停用 = 文件名加 `_` 前缀 + 工作区库撤信任；对"待批准"点启用 = 批准） |
+| `POST /plugins/reload` | 强制重读某个文件（改了不生效、装载失败想再试） |
+| `POST /plugins/remove` | 删除库里的文件（危险动作，界面负责二次确认） |
+
+```bash
+curl "http://127.0.0.1:8000/plugins?workspace=D:/work"
+curl -X POST http://127.0.0.1:8000/plugins/enable \
+  -H 'content-type: application/json' \
+  -d '{"where":"workspace","workspace":"D:/work","file":"panel.json","enabled":false}'
+```
+
+三条规则：**只收文件名**（不接受路径，越界在服务层被拒）；**停用只有一种**
+（同名状态不会在"停用"与"撤信任"之间分叉）；**不绕过回合边界**（结构类改动仍在下一个回合生效，
+与 agent 改的是同一套规则）。内置插件只列不动——它们是装配的一部分。
 
 ## 命令行验证
 
@@ -470,53 +701,78 @@ curl -N -sS -X POST http://127.0.0.1:8000/chat/stream \
 
 ## 分层
 
-经典三层，依赖方向单向向下：
+**目录顺序 = 依赖方向**：内核侧四层从下往上排，宿主收在 `web/` 里，跨层共享的叶子收在 `common/` 里。
 
 ```
-app/api/          表现层      HTTP、请求体校验、SSE 外壳
-     ↓
-app/service/      业务层      编排 Agent 执行、维护会话索引与工作区
-     ↓
-app/dao/          数据访问层  只读写自有表：thread_index / workspace / thread_workspace
-app/agent/        Agent 运行时 图定义、事件映射、沙箱、工具
-     ↓
-app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换用
+app/
+  kernel/     L0 通用插件内核  内联的 Cordis 版内核（零 app 依赖，整体可搬走）
+  harness/    L1 装配层       片段契约 → 合成器 → 版本/租约 → 报告/资产/节点壳
+  agent/      L2 运行时       节点、模型、提示词、工具、沙箱、压缩
+  plugins/    L3 插件         builtin/ 下十五个：loop（骨架）、protocol、toolbox、atomic_tools（批量工具）、
+                              model、retry、store、sandbox、compaction、approvals、context、exporters、
+                              graph_tools、skillbook、webui（前端资产）+ discover
+  web/        L4 宿主         api（表现）+ service（业务）+ handler（异常出口）
+                              + result / constant（宿主侧响应封套）
+  common/     共享叶子       config / exceptions / models——谁都能用，它谁也不依赖
+  main.py  desktop.py  container.py   进程入口 + 装配根（一条 ctx.plugin(...) 串起全部）
 ```
+
+规则不是建议：`tests/test_layout.py` 按下面这张表扫 import，**改错地方会红**。
+
+- **内核侧单向向上**：kernel → harness → agent → plugins；逆向 import = 违规
+- **宿主只向下**：`web/*` 可以 import 内核侧任何层，反向不允许；web 内部 api → service 单向
+  （存储那一层已经在阶段 K2 拆成 `builtin/store` 插件——宿主不再有自己的 DAO）
+- **`common/` 只收叶子**：它不许 import 任何 `app.*`；出现第一个 app 内依赖就说明放错了
+- **入口与装配根豁免**：`main.py` / `desktop.py` / `container.py` / `harness/__main__.py`；
+  唯一显式例外是 `web/api` 经 `app.container` 取服务（服务定位器，装配根是唯一的全局句柄）
+
+> 自查一条：`grep -rn "from app\.web" app/{kernel,harness,agent,plugins,common}` 应当为空。
+
+**新代码放哪一层**（拿不准就看这张表）：
+
+| 要加的东西 | 放哪 | 判据 |
+| --- | --- | --- |
+| 通用机制 | `kernel/` | 换个项目也能用；`kernel/` 自己不许 import `app.*` |
+| "图怎么拼"的机制与产出契约 | `harness/` | 片段契约、合成、版本、接缝形状（`events.py`） |
+| 图内实现与领域能力 | `agent/` | 节点实现、模型、提示词、工具、沙箱、压缩 |
+| 把能力接进装配 | `plugins/` | 写 `ctx.provide(...)` / `ctx.structure.contribute(...)` 的地方 |
+| HTTP / 业务编排 / 存储 | `web/` | 经典三层，单向向下 |
+| 被两层以上使用的纯类型或配置 | `common/` | 且它自己不依赖任何 `app.*` |
 
 `app/agent/` 内部按**关注点**分文件——一个模块名说清一件事，别再往 `langgraph_runner.py` 里塞：
 
 | 文件 | 放什么 |
 | --- | --- |
-| `graph.py` | 图与节点（`AgentState`、`build_graph`、superstep 上限） |
-| `stream.py` | LangGraph 事件 → 项目事件协议（`translate_events`） |
+| `nodes.py` | 图节点实现（模型调用 / 压缩检查）与 superstep 上限 |
 | `langgraph_runner.py` | 门面：实现 `AgentRunner` 协议的 `LangGraphRunner`，不写业务逻辑 |
 | `tool_calls.py` | 工具执行：人工审批、并行调用、失败与中断收口 |
 | `compaction/` | 上下文压缩（`policy` 纯逻辑 / `runtime` 接进图） |
 | `messages.py` | 消息与历史重建（纯函数，能单独测） |
-| `models.py` | 模型构建（正常 / 摘要 / 没配 key 时的占位） |
-| `retry.py` | 上游调用失败的重试（错误分类 + 退避） |
 | `prompts.py` | 系统提示词：人格 + 工具策略，并按工作区拼上约定与技能索引 |
 | `skills.py` | 技能：发现、解析、渲染（索引常驻 + 正文按需，无检索） |
 | `agents_md.py` | 项目约定（AGENTS.md / CLAUDE.md）的分层发现与注入 |
 | `runner.py` | `AgentRunner` 协议与 `StubRunner` |
 | `sandbox.py` / `runtime.py` / `tools/` | 沙箱、工作区 ContextVar、工具本体（`tools/diff.py` 只负责 edit 的差异数据） |
 
-- `app/container.py` 是**组装根**：选哪个实现、连接何时开关，都属于应用装配
-- `app/handler/` 是**全局异常处理**：非流式那半边的兜底出口（流式在 `app/event/stream.py`）
-- `app/event/` 是**协议模型**（wire format）：前端能看见的一切形状。判据只有一条——
-  **要不要跨 HTTP 边界**：要 → 这里是 pydantic，供 OpenAPI；只在层间流转 → 放 `app/models/`，
-  dataclass 不带校验。agent 层直接产出数据面事件，业务层把实体映射成列表项与回执，
-  表现层只负责包 `Result`；**dao 不 import 它**（存储层不该知道协议）。
-  请求体是入站的 HTTP 校验，留在 api 层，不进 `app/event/`
-- `app/exceptions/` 放自定义异常（`SandboxDenied`、`InvalidInput`）
+- `app/container.py` 是**组装根**：一串 `ctx.plugin(...)`（必需项标 `essential=True`）——
+  存储、模型、重试、协议、工具箱各自把自己的服务挂上 ctx；装配根只报"装配本身"的事
+- `app/agent/sandbox.py` 是**沙箱机制**（判定顺序、授权文件、硬阻断）；**策略**（禁区名单、
+  受信只读根、是否询问）在 `builtin/sandbox` 插件里，装载时安装、卸载即回默认
+- `app/web/handler/` 是**全局异常处理**：非流式那半边的兜底出口（流式的在 `builtin/protocol`）
+- `app/harness/events.py` 是**事件词汇表**（图的产出形状，与 `fragment.py` 的接缝表同侧）；
+  `plugins/builtin/protocol/` 负责把它**映射 + 编码**成 wire 形状（SSE 帧）。判据只有一条——
+  **要不要跨 HTTP 边界**：要 → pydantic（`harness/events.py` + `web/api` 的返回注解）；只在层间流转 →
+  放 `app/common/models/`，dataclass 不带校验。业务层把实体映射成列表项与回执，表现层只负责包 `Result`；
+  **存储层不 import 协议**（在 `builtin/store` 里，不该知道 wire 形状）。请求体是入站的 HTTP 校验，留在 `web/api` 层
+- `app/common/exceptions/` 放自定义异常（`SandboxDenied`、`InvalidInput`）
 - checkpointer **不单独抽 DAO**：那是 LangGraph 自己的存储，不是我们写的 SQL
 
-**`app/` 下每个关注点都是一级包**，不放散落的同名模块——`app/config/`、`app/result/`、
-`app/constant/` 都一样。包内的模块名**别和包同名**，否则会出现 `app.exceptions.exceptions`
-这种双重叠词；所以"默认名字必然等于包名"的那几个（`config`、`exceptions`、`handler`）直接把
-代码写在 `__init__.py` 里，其余一律具名模块（`api/chat.py`、`event/events.py`、`dao/workspace_dao.py`）。
+**一个关注点一个包**（不放散落的同名模块），包按归属分组：内核侧四层、`web/`、`common/`。
+包内的模块名**别和包同名**，否则会出现 `app.common.exceptions.exceptions` 这种双重叠词；
+所以"默认名字必然等于包名"的那几个（`config`、`exceptions`、`handler`）直接把代码写在
+`__init__.py` 里，其余一律具名模块（`web/api/chat.py`、`harness/composer.py`、`builtin/store/workspace_dao.py`）。
 
-> `app/config/__init__.py` 的 `PROJECT_ROOT` 是**按目录层级数出来的**，挪文件必须同步改。
+> `app/common/config/__init__.py` 的 `PROJECT_ROOT` 是**按目录层级数出来的**，挪文件必须同步改。
 > 它算错不会报错，只会让相对路径的配置静默写到别处去，所以那里有启动断言兜底。
 
 ## 日志
@@ -537,17 +793,22 @@ app/models/       领域实体    ThreadRecord / WorkspaceRecord，层间交换�
 > 和参数 blob 都打出来，自己人的日志反而找不到。uvicorn 的访问日志不受影响。
 
 > 错误信息就是异常原文，不做翻译——面向程序员的项目，原文比客套话有用。
-> 前端也会把 `error` 帧与关键转场打到浏览器 console（前缀 `[my-agent]`）。
+> 前端也会把 `error` 帧与关键转场打到浏览器 console（前缀 `[r-agent]`）。
 
 ## 扩展点
 
 | 要改什么 | 改哪里 |
 | --- | --- |
 | 加工具 | `app/agent/tools/` 下新建文件，在 `__init__.py` 的 `TOOLS` 里注册 |
-| 加技能 | `<工作区>/.my_agent/skills/<名字>/SKILL.md`，或全局库 `~/.my_agent/skills`；**不用改代码** |
+| 给插件加可配置项 | 在**插件自己**的 `Config` + `default_config()` 里加；只有它也要暴露成 `.env` 全局项时，才同步 `app/common/config` + `.env.example` + 本表三处 |
+| 加一条图内链（不改代码） | 写一个 `.json` 片段声明放进插件库（全局库直接生效；工作区库还要进 `<工作区>/.r-agent/plugins.json` 的 `trusted`），见"插件库"一节 |
+| 加可编程插件 | 插件库里放 `.py`：`plugin = {"apply": apply, "name": "..."}`；信任规则同上 |
+| 让 agent 自己改图 | `builtin/graph_tools` 的工具（`add_fragment` / `install_plugin` / `inspect_graph`）：模型写、人点批准、下个回合边界生效；`.py` 要装配时放行 |
+| 加技能 | `<工作区>/.r-agent/skills/<名字>/SKILL.md`，或全局库 `~/.r-agent/skills`；**不用改代码** |
 | 加项目约定 | 工作区（或任一祖先目录）放 `AGENTS.md`；同目录要覆盖它就用 `AGENTS.override.md` |
-| 加需审批的工具 | 把工具名加进同文件的 `APPROVAL_REQUIRED` |
-| 换存储 | `app/container.py` 里换 checkpointer |
+| 加需审批的工具 | 装配时给 `builtin/approvals` 传 `{"required": ["bash"]}`（即时生效） |
+| 换存储 | 换一个 `builtin/store` 插件（服务 `checkpointer` / `index` / `workspaces` / `graph_versions`），或改它的 `sqlite_path` 配置 |
 | 换 Agent 实现 | 实现 `AgentRunner` 协议（`app/agent/runner.py`），在容器里替换 |
-| 换事件类型 | `app/event/events.py`，前端同步加一个 `case` |
-| 换前端 | `app/static/index.html` 可整体替换，事件处理逻辑可直接移植到 Next.js |
+| 换事件类型 | `app/harness/events.py`（并 bump 协议版本），前端同步加一个 `case`；映射与编码在 `plugins/builtin/protocol/` |
+| 换前端 | `app/plugins/builtin/webui/static/` 可整体替换（或换一份 webui 插件），事件处理逻辑可直接移植到 Next.js |
+| 加一套前端（多前端并存） | 写个插件 `ctx.assets.mount('<alias>', <目录>)` → 页面在 `/<alias>/…`；与内置 `/ui` 并存，一个进程可同时挂多套（资产是进程级的） |

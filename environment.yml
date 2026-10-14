@@ -1,4 +1,4 @@
-name: my_agent
+name: r-agent
 channels:
   - conda-forge
 dependencies:

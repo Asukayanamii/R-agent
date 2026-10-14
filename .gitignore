@@ -11,5 +11,7 @@ env/
 .pytest_cache/
 data/
 .commandcode
-.my_agent/
+.r-agent/
 LESSONS.md
+build/
+dist/

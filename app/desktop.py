@@ -21,7 +21,7 @@ from app.main import app
 
 logger = logging.getLogger(__name__)
 
-WINDOW_TITLE = "my-agent"
+WINDOW_TITLE = "r-agent"
 WINDOW_SIZE = (1180, 780)
 WINDOW_MIN = (880, 600)
 
@@ -84,10 +84,38 @@ def _wait_ready(url: str, timeout: float = 30.0) -> None:
     raise RuntimeError(f"后端未能在 {timeout}s 内就绪：{url}")
 
 
-def main() -> None:
+def serve(host: str = "127.0.0.1", port: int | None = None) -> None:
+    """只跑后端、不开窗口（打包后的服务器形态；桌面模式内部也是同一个后端）。
+
+    `--serve` 用途：打包件在没装 pywebview 的机器上跑、丢到服务器上跑、
+    以及"我就想要个地址用浏览器打开"。端口 0 = 让系统分配。
+    """
+    chosen = port or _pick_port()
+    logger.info("后端启动：http://%s:%s/ui/（Ctrl+C 停止）", host, chosen)
+    uvicorn.run(app, host=host, port=chosen, log_level="info")
+
+
+def _arg_value(args: list[str], flag: str, default: int) -> int:
+    """极简参数取值：`--port 8123` / `--port=8123` 两种写法都认。"""
+    for index, item in enumerate(args):
+        if item == flag and index + 1 < len(args):
+            return int(args[index + 1])
+        if item.startswith(f"{flag}="):
+            return int(item.split("=", 1)[1])
+    return default
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    port = _arg_value(args, "--port", 0) or None
+
+    if "--serve" in args or "--no-window" in args:
+        serve(port=port)
+        return
+
     import webview
 
-    port = _pick_port()
+    port = port or _pick_port()
     base = f"http://127.0.0.1:{port}"
     logger.info("桌面端启动：后端 %s，窗口标题 %s", base, WINDOW_TITLE)
 
